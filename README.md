@@ -17,6 +17,7 @@ sensore e' saldato nel tasto di accensione e non sostituibile: usare con cautela
 - `tools/pairing.py` — provisioning PSK (busta 0xbb010003), algoritmo e costanti dal driver
   open source di sorguido/grold (LGPL-2.1), verificati sul firmware 12508.
 - `tools/gxpcap.py` — decoder del protocollo da catture usbmon/pcap.
+- `tools/preprocessor.py`, `tools/match*.py` — preprocessing e matcher SIGFM (SPERIMENTALE, **non ancora affidabile**: vedi `docs/matching.md`).
 - `driver_5125.py` — prototipo: provisioning + sessione TLS-PSK + acquisizione immagine.
 - `docs/protocol.md` — protocollo ricostruito.
 

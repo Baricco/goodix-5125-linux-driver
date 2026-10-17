@@ -44,6 +44,8 @@ SENSOR_HEIGHT = 64
 TLS_IDENTITY = b"Client_identity"
 PSK_STORE = os.path.join(os.path.dirname(__file__), "state", "linux_psk.bin")
 WAIT_FOR_FINGER = False
+CAPTURE_TAG = "fingerprint"
+ENROLL_COUNT = 1
 
 # Blocco config catturato dalla sessione del driver Windows (0x90), 224 byte.
 CONFIG90 = open(os.path.join(os.path.dirname(__file__), "captures", "config90.bin"), "rb").read()
@@ -263,23 +265,40 @@ def init_and_capture(device, server):
 
     _capture_frame(device, server, "clear-0")
 
-    if WAIT_FOR_FINGER:
-        # arma il rilevamento dito (FDT) e attende il contatto, poi acquisisce l'impronta
-        device.mcu_switch_to_fdt_mode(
-            b"\x0d\x01\x80\xb1\x80\xc1\x80\xa6\x80\xb6\x80\xa5\x80\xb6", True)
-        device.mcu_switch_to_fdt_down(
-            b"\x0c\x01\x80\xb1\x80\xc1\x80\xa6\x80\xb6\x80\xa5\x80\xb6", True)
-        device.nop()
-        device.query_mcu_state(b"\x55", True)
-        log(">>> appoggia il dito sul sensore (hai ~30s) <<<")
-        for attempt in range(6):
-            try:
-                device.mcu_switch_to_fdt_down(
-                    b"\x0c\x01\x80\xb2\x80\xc2\x80\xa7\x80\xb6\x80\xa6\x80\xb6", True)
-                break
-            except usb.core.USBError:
-                log(f"...in attesa del dito ({attempt + 1}/6)")
-        _capture_frame(device, server, "fingerprint")
+    if WAIT_FOR_FINGER or ENROLL_COUNT > 1:
+        n = ENROLL_COUNT if ENROLL_COUNT > 1 else 1
+        for i in range(n):
+            # arma il rilevamento dito (FDT)
+            device.mcu_switch_to_fdt_mode(
+                b"\x0d\x01\x80\xb1\x80\xc1\x80\xa6\x80\xb6\x80\xa5\x80\xb6", True)
+            device.mcu_switch_to_fdt_down(
+                b"\x0c\x01\x80\xb1\x80\xc1\x80\xa6\x80\xb6\x80\xa5\x80\xb6", True)
+            device.nop()
+            device.query_mcu_state(b"\x55", True)
+            if n > 1:
+                log(f">>> tocco {i + 1}/{n}: appoggia il dito (sposta un po' ogni volta) <<<")
+            else:
+                log(">>> appoggia il dito sul sensore (hai ~30s) <<<")
+            # attende il contatto
+            for attempt in range(10):
+                try:
+                    device.mcu_switch_to_fdt_down(
+                        b"\x0c\x01\x80\xb2\x80\xc2\x80\xa7\x80\xb6\x80\xa6\x80\xb6", True)
+                    break
+                except usb.core.USBError:
+                    pass
+            tag = f"{CAPTURE_TAG}_{i:02d}" if n > 1 else CAPTURE_TAG
+            _capture_frame(device, server, tag)
+            if n > 1 and i < n - 1:
+                # attende il sollevamento del dito prima del tocco successivo
+                log("    solleva il dito")
+                for attempt in range(10):
+                    try:
+                        device.mcu_switch_to_fdt_up(
+                            b"\x0e\x01\x80\x90\x80\x9a\x80\x7b\x80\x95\x80\x8c\x80\xa3")
+                        break
+                    except usb.core.USBError:
+                        pass
 
 
 def _capture_frame(device, server, name):
@@ -333,9 +352,13 @@ def main():
     ap.add_argument("--capture", action="store_true", help="init TLS e acquisisci immagine")
     ap.add_argument("--probe", action="store_true", help="solo lettura")
     ap.add_argument("--finger", action="store_true", help="dopo il clear, attendi il dito e acquisisci l'impronta")
+    ap.add_argument("--tag", default="fingerprint", help="nome file per l'impronta acquisita")
+    ap.add_argument("--enroll", type=int, default=1, help="numero di tocchi da acquisire in sessione (template multi-frame)")
     args = ap.parse_args()
-    global WAIT_FOR_FINGER
+    global WAIT_FOR_FINGER, CAPTURE_TAG, ENROLL_COUNT
     WAIT_FOR_FINGER = args.finger
+    CAPTURE_TAG = args.tag
+    ENROLL_COUNT = args.enroll
 
     detach_kernel(None)
     device = goodix.Device(PRODUCT, protocol.USBProtocol)
@@ -371,7 +394,7 @@ def main():
     psk = load_or_create_psk()
     if args.write:
         provision(device, psk)
-    if args.capture or args.finger:
+    if args.capture or args.finger or args.enroll > 1:
         server = TlsPskServer(psk)
         init_and_capture(device, server)
 
