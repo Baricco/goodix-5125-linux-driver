@@ -1,0 +1,7 @@
+# Trasporto USB e framing (riusa goodix-fp-dump, clonato a parte)
+pyusb
+# Provisioning PSK e decodifica immagine
+pycryptodome
+# Preprocessing e matcher SIGFM
+opencv-python-headless
+numpy

@@ -1,0 +1,19 @@
+# Segreti e materiale proprietario: mai nel repo
+captures/
+state/
+re/
+vm/
+ext/
+goodix-fp-dump/
+*.bin
+*.dll
+*.exe
+*.cab
+*.pcap
+*.pcapng
+*.pgm
+*.iso
+.venv/
+tools/.venv/
+__pycache__/
+*.pyc
