@@ -81,6 +81,30 @@ def usb_reset():
         os.close(fd)
 
 
+def hard_reenumerate():
+    """Unbind + rebind del device via sysfs = equivalente del Disable/Enable di Windows
+    (teardown + ri-enumerazione + riconfigurazione complete). Richiede root. -> busid o None."""
+    import glob
+    vid, pid = f"{VENDOR:04x}", f"{PRODUCT:04x}"
+    for p in glob.glob("/sys/bus/usb/devices/*"):
+        try:
+            if (open(os.path.join(p, "idVendor")).read().strip() == vid and
+                    open(os.path.join(p, "idProduct")).read().strip() == pid):
+                busid = os.path.basename(p)      # es. "3-3"
+                try:
+                    open("/sys/bus/usb/drivers/usb/unbind", "w").write(busid)
+                    time.sleep(1.0)
+                    open("/sys/bus/usb/drivers/usb/bind", "w").write(busid)
+                    return busid
+                except PermissionError:
+                    log("unbind/rebind richiede root: rilancia con "
+                        "'sudo tools/.venv/bin/python tools/sensor_recover.py'")
+                    return None
+        except OSError:
+            continue
+    return None
+
+
 def main():
     d = usb.core.find(idVendor=VENDOR, idProduct=PRODUCT)
     if d is None:
@@ -132,8 +156,25 @@ def main():
     except Exception as e:
         log(f"riapertura fallita: {type(e).__name__}")
 
-    log("NON recuperato dal lato Linux. Il firmware applicativo non riparte: "
-        "serve il driver ufficiale (VM Windows) per rimetterlo in modalita' APP.")
+    # 4) unbind/rebind = equivalente del Disable/Enable di Windows (ri-enumerazione completa).
+    #    La cattura USB del driver Windows mostra che il recupero NON usa comandi vendor: e' solo
+    #    USB reset + ri-enumerazione + SET_CONFIGURATION. Questo e' il passo piu' vicino. Serve root.
+    busid = hard_reenumerate()
+    if busid:
+        log(f"unbind/rebind {busid} ok, riapro…")
+        time.sleep(2.0)
+        try:
+            dev3 = goodix.Device(PRODUCT, protocol.USBProtocol)
+            fw = resync(dev3, attempts=6, t=1.2)
+            if fw:
+                log(f"RECUPERATO (unbind/rebind): firmware = {fw}"); return
+        except Exception as e:
+            log(f"riapertura dopo rebind fallita: {type(e).__name__}")
+
+    log("NON recuperato dal lato Linux. Secondo la cattura USB il driver Windows non usa comandi "
+        "speciali: il recupero e' USB reset + ri-enumerazione. Se nemmeno unbind/rebind basta, il "
+        "firmware e' in un wedge profondo: serve il driver ufficiale (VM Windows). "
+        "Prevenzione: teardown pulito (gia' attivo) per non arrivarci.")
     sys.exit(1)
 
 
