@@ -99,6 +99,7 @@ class HardwareSource:
     def capture_clear(self):  return self.s.capture_clear()
     def arm(self):            self.s.arm()
     def capture_touch(self):  return self.s.wait_touch_and_capture()
+    def grab(self):           return self.s.grab()
     def lift(self):           self.s.wait_lift()
     def close(self):          self.s.close()
 
@@ -117,6 +118,7 @@ class ReplaySource:
         time.sleep(0.2)
         f = self.frames[self.i % len(self.frames)]; self.i += 1
         return f
+    def grab(self):           return self.capture_touch()
     def lift(self):           pass
     def close(self):          pass
 
@@ -148,9 +150,12 @@ class Worker(QtCore.QObject):
             return
         try:
             with contextlib.redirect_stdout(DEVNULL):
-                self.src.arm()
-                f = self.src.capture_touch()
-                self.src.lift()
+                if kind == "map":
+                    f = self.src.grab()          # mappatura: cattura continua, niente danza FDT
+                else:
+                    self.src.arm()               # verifica: tocco singolo deliberato
+                    f = self.src.capture_touch()
+                    self.src.lift()
             self.frame_ready.emit(f, kind)
         except Exception as e:
             self.failed.emit(f"cattura: {e}")
@@ -175,6 +180,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.mapping = False
         self._vleft = 0
         self._vbest = {}
+        self._last_render = 0.0
 
         self.thread = QtCore.QThread(self)
         self.worker = Worker(src)
@@ -378,7 +384,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.btn_map.setText("Ferma"); self.btn_verify.setEnabled(False)
             self._capture("map")
         else:
-            self.btn_map.setText("Mappa dito"); self._sync_buttons()
+            self.btn_map.setText("Mappa dito"); self._show_map(); self._sync_buttons()
 
     def on_verify_start(self):
         if not self.fingers:
@@ -393,8 +399,9 @@ class MainWindow(QtWidgets.QMainWindow):
     def on_frame(self, frame, kind):
         if kind == "map":
             r = self.session.add_frame(frame)
-            if r.get("placed"):
-                self._show_map()
+            now = time.monotonic()
+            if r.get("placed") and now - self._last_render > 0.12:   # rendering throttled (~8/s)
+                self._show_map(); self._last_render = now
             tag = {"mappa estesa": "✓", "inizio mappa": "✓", "nuovo pezzo": "+",
                    "già coperto qui": "•", "debole": "·"}.get(
                 r["status"], "↔" if r["status"].startswith("ponte") else "·")

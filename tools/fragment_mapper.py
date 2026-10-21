@@ -25,6 +25,7 @@ W, H = 80, 64
 CANVAS = 600
 REG_MIN = 7          # inlier per agganciare/estendere un pezzo
 BRIDGE_MIN = 11      # inlier (su entrambi i pezzi) per fondere: piu' severo, evita fusioni errate
+FAST_INL = 14        # aggancio "solido" sul frammento corrente -> fast-path senza cercare su tutti
 SPACING = 9          # px minimi di spostamento per un nuovo keyframe
 VERIFY_MIN = 300     # soglia SIGFM (= enroll_engine.ACCEPT)
 IDENT = np.array([[1, 0, 0], [0, 1, 0]], np.float32)
@@ -84,6 +85,7 @@ class FragmentMapper:
         self.clear = clear
         self.frags = []
         self.last = None        # (fragment, pose) ultimo frame piazzato
+        self.current = None     # ultimo frammento esteso (per il fast-path)
 
     # ---- registrazione ----
     def _best_in(self, feats, frag):
@@ -107,8 +109,24 @@ class FragmentMapper:
 
         if not self.frags:
             fr = Fragment(); fr.add_kf(feats, img, IDENT.copy())
-            self.frags.append(fr); self.last = (fr, IDENT.copy())
+            self.frags.append(fr); self.last = (fr, IDENT.copy()); self.current = fr
             return self._info("inizio mappa", True, fr, IDENT.copy(), [])
+
+        # FAST PATH: lo scorrimento continuo resta sul frammento corrente. Provalo per primo e, se
+        # aggancia solido, estendi senza cercare su tutti i pezzi (O(1) invece di O(n_pezzi)).
+        cur = self.current if self.current in self.frags else None
+        if cur is not None:
+            b = self._best_in(feats, cur)
+            if b and b[2] >= FAST_INL:
+                kfA, MA, inlA = b
+                poseA = mz._compose(kfA["pose"], MA)
+                dmin = min(np.hypot(*(_center(poseA)[:2] - c[:2])) for c in cur.centers())
+                placed = dmin >= SPACING
+                if placed:
+                    cur.add_kf(feats, img, poseA)
+                self.last = (cur, poseA)
+                return self._info("mappa estesa" if placed else "già coperto qui",
+                                  placed, cur, poseA, [], inlA)
 
         hits = {}
         for fr in self.frags:
@@ -117,7 +135,7 @@ class FragmentMapper:
                 hits[id(fr)] = (fr, b)
         if not hits:
             fr = Fragment(); fr.add_kf(feats, img, IDENT.copy())
-            self.frags.append(fr); self.last = (fr, IDENT.copy())
+            self.frags.append(fr); self.last = (fr, IDENT.copy()); self.current = fr
             return self._info("nuovo pezzo", True, fr, IDENT.copy(), [])
 
         # ancora = pezzo con match migliore
@@ -143,7 +161,7 @@ class FragmentMapper:
         if bridged:
             anchor.rebuild()
 
-        self.last = (anchor, poseA)
+        self.last = (anchor, poseA); self.current = anchor
         status = (f"ponte: uniti {len(bridged)} pezzi" if bridged
                   else ("mappa estesa" if placed else "già coperto qui"))
         return self._info(status, placed or bool(bridged), anchor, poseA, bridged, inlA)

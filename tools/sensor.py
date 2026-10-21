@@ -159,6 +159,12 @@ class Sensor:
         """Frame di baseline (nessun dito). Da chiamare una volta dopo open()."""
         return self._read_image()
 
+    def grab(self):
+        """Acquisizione CONTINUA: una singola immagine via mcu_get_image, senza la danza FDT
+        (niente attesa evento dito-giu' / sollevamento). Per la mappatura a scorrimento: l'utente
+        tiene il dito premuto e lo muove, noi acquisiamo di fila. Molto piu' veloce e fluido."""
+        return self._read_image()
+
     def arm(self):
         """Arma il rilevamento dito per il prossimo tocco."""
         d = self.device
