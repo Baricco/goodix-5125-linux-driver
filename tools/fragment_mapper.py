@@ -207,6 +207,19 @@ class FragmentMapper:
                     return True, best, 0
         return False, best, 0
 
+    def best_score(self, feats, cap=VERIFY_MIN):
+        """Miglior score SIGFM di feats (gia' estratte) contro i keyframe; early-exit a cap.
+        Per la verifica contro piu' impronte senza ri-preprocessare."""
+        best = 0
+        for fr in sorted(self.frags, key=lambda f: -len(f.kfs)):
+            for kf in fr.kfs:
+                s = sigfm.match_score(kf["feats"], feats)
+                if s > best:
+                    best = s
+                if best >= cap:
+                    return best
+        return best
+
     def prune(self, min_tiles=2):
         """Rimuove i pezzetti troppo piccoli (bordi/rumore, inutili alla verifica). -> n rimossi."""
         before = len(self.frags)

@@ -12,6 +12,8 @@ I frame tornano come array (H, W) uint16 nello stesso formato che si aspetta enr
 import os
 import sys
 import time
+import glob
+import fcntl
 
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(_ROOT, "goodix-fp-dump"))
@@ -35,30 +37,67 @@ _FDT_DOWN_WAIT = b"\x0c\x01\x80\xb2\x80\xc2\x80\xa7\x80\xb6\x80\xa6\x80\xb6"
 _FDT_UP = b"\x0e\x01\x80\x90\x80\x9a\x80\x7b\x80\x95\x80\x8c\x80\xa3"
 
 
+def reset_usb(vendor=drv.VENDOR, product=drv.PRODUCT):
+    """Reset USB del device (ri-enumerazione) via USBDEVFS_RESET. Trova il nodo per VID/PID in
+    sysfs (nessun bus/indirizzo hardcoded) -> portabile su qualsiasi macchina. Non distruttivo.
+    Serve a partire sempre da uno stato pulito anche se la sessione precedente e' morta a meta'."""
+    vid, pid = f"{vendor:04x}", f"{product:04x}"
+    for d in glob.glob("/sys/bus/usb/devices/*"):
+        try:
+            if (open(os.path.join(d, "idVendor")).read().strip() == vid and
+                    open(os.path.join(d, "idProduct")).read().strip() == pid):
+                bus = int(open(os.path.join(d, "busnum")).read())
+                dev = int(open(os.path.join(d, "devnum")).read())
+                fd = os.open(f"/dev/bus/usb/{bus:03d}/{dev:03d}", os.O_WRONLY)
+                try:
+                    fcntl.ioctl(fd, (ord("U") << 8) | 20, 0)
+                finally:
+                    os.close(fd)
+                return True
+        except OSError:
+            continue
+    return False
+
+
 class Sensor:
     def __init__(self):
         self.device = None
         self.server = None
 
     # ---- ciclo di vita ----
-    def open(self):
+    def _connect(self):
+        """Apre il trasporto e sincronizza. -> stringa firmware, o solleva."""
         drv.detach_kernel(None)
         self.device = goodix.Device(drv.PRODUCT, protocol.USBProtocol)
-        fw = None
         for _ in range(5):
             try:
                 self.device.empty_buffer()
                 self.device.nop()
-                fw = self.device.firmware_version()
-                break
+                return self.device.firmware_version()
             except Exception:
                 try:
                     self.device.empty_buffer()
                 except Exception:
                     pass
                 time.sleep(0.2)
-        if fw is None:
-            raise SystemError("impossibile sincronizzare il trasporto col sensore")
+        raise SystemError("sync fallito")
+
+    def open(self):
+        # SELF-HEALING: resetta il device prima di parlarci, cosi' uno stato sporco lasciato da
+        # una sessione precedente (es. crash a meta' TLS) non blocca l'init.
+        reset_usb()
+        time.sleep(0.4)
+        try:
+            fw = self._connect()
+        except Exception:
+            reset_usb()                 # secondo tentativo dopo un reset piu' deciso
+            time.sleep(0.6)
+            try:
+                fw = self._connect()
+            except Exception:
+                raise SystemError(
+                    "sensore non sincronizzabile dopo reset USB: potrebbe essere in uno stato "
+                    "bloccato profondo (serve recovery). Vedi tools/sensor_recover.py")
         if not fw.startswith("GF_ST411SEC_APP_125"):
             raise SystemError(f"firmware non previsto: {fw}")
         self.firmware = fw
@@ -86,8 +125,14 @@ class Sensor:
             d.write_sensor_register(addr, val)
 
     def close(self):
+        # TEARDOWN PULITO: soft-reset dell'MCU cosi' il firmware riparte e il device non resta
+        # mai bloccato a meta' di una sessione TLS (causa principale del wedge).
         try:
             if self.device is not None:
+                try:
+                    self.device.reset(False, True, 20)   # reset_sensor=False, soft_reset_mcu=True
+                except Exception:
+                    pass
                 usb.util.dispose_resources(self.device.protocol.device)
         except Exception:
             pass
