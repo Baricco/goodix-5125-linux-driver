@@ -5,3 +5,5 @@ pycryptodome
 # Preprocessing e matcher SIGFM
 opencv-python-headless
 numpy
+# GUI di enroll a copertura (tools/enroll_gui.py)
+PySide6-Essentials

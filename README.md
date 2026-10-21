@@ -17,9 +17,26 @@ sensore e' saldato nel tasto di accensione e non sostituibile: usare con cautela
 - `tools/pairing.py` — provisioning PSK (busta 0xbb010003), algoritmo e costanti dal driver
   open source di sorguido/grold (LGPL-2.1), verificati sul firmware 12508.
 - `tools/gxpcap.py` — decoder del protocollo da catture usbmon/pcap.
-- `tools/preprocessor.py`, `tools/match*.py` — preprocessing e matcher SIGFM (SPERIMENTALE, **non ancora affidabile**: vedi `docs/matching.md`).
+- `tools/preprocessor.py` — preprocessing immagine (baseline + column-norm + CLAHE).
+- `tools/sigfm.py` — matcher SIGFM (voto geometrico a coppie), port fedele da
+  goodix-fp-linux-dev/sigfm, vettorizzato con early-out. Veloce (~1-5 ms per confronto).
+- `tools/coverage.py`, `tools/enroll_engine.py` — modello di enroll a COPERTURA DI PUNTI
+  (il template e' un insieme di punti del dito; verify = max score). Vedi `docs/matching.md`.
+- `tools/enroll_gui.py` — GUI PySide6 di enroll: frame live, forza del tocco, mappa dei punti
+  coperti, verifica. Gira da utente (udev uaccess). `--replay captures` per provarla offline.
 - `driver_5125.py` — prototipo: provisioning + sessione TLS-PSK + acquisizione immagine.
-- `docs/protocol.md` — protocollo ricostruito.
+- `docs/protocol.md` — protocollo ricostruito. `docs/matching.md` — stato del riconoscimento.
+
+## Enroll e riconoscimento
+
+```
+tools/.venv/bin/python tools/enroll_gui.py            # enroll + verify con la GUI (hardware)
+tools/.venv/bin/python tools/enroll_gui.py --replay captures   # demo senza hardware
+```
+
+Il sensore e' piccolo e a tocco: due pressioni combaciano solo se cadono quasi sullo stesso
+punto. Quindi l'enroll campiona TANTI punti del dito e la verifica accetta se il tocco si
+sovrappone ad almeno un punto. La GUI mostra la copertura in tempo reale per riempire i buchi.
 
 ## Crediti
 

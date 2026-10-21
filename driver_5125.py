@@ -276,7 +276,12 @@ def init_and_capture(device, server):
             device.nop()
             device.query_mcu_state(b"\x55", True)
             if n > 1:
-                log(f">>> tocco {i + 1}/{n}: appoggia il dito (sposta un po' ogni volta) <<<")
+                # enroll per COPERTURA: guida l'utente a coprire zone diverse del polpastrello
+                # (vedi docs/matching.md) cosi' che ogni tocco futuro si sovrapponga a un frame.
+                zones = ["centro", "punta", "base", "lato sinistro", "lato destro",
+                         "punta-sinistra", "punta-destra", "base-sinistra", "base-destra"]
+                zone = zones[i % len(zones)]
+                log(f">>> tocco {i + 1}/{n}: appoggia il dito spostandolo verso {zone} <<<")
             else:
                 log(">>> appoggia il dito sul sensore (hai ~30s) <<<")
             # attende il contatto
