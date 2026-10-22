@@ -66,10 +66,14 @@ aggiunge un drop-in **`--no-timeout`** a `fprintd` (indispensabile: altrimenti f
 Alla prima apertura il driver scrive la nuova PSK (nessun flash firmware). Enroll **denso**:
 
 ```fish
+journalctl -u fprintd -b | grep -i goodix  # conferma che goodixgf apre il device
 fprintd-delete $USER                       # pulisce enroll precedenti (ok se non c'è nulla)
-fprintd-enroll -f right-index-finger $USER # ~6-10 tocchi: muovi poco il dito (punta/centro/lati)
+fprintd-enroll -f right-index-finger $USER # dito LONTANO al primo open (provisioning PSK + baseline),
+                                           # poi appoggia quando chiede, 3-8 volte, spostando la zona
 fprintd-verify $USER                       # ripeti qualche volta
 ```
+Soglia matcher: `GF_SIGFM_SCORE_THRESHOLD=20` in `src/goodixgf.c` (ri-lanciare l'installer dopo una
+modifica). SIGFM vuole ≥25 keypoint SIFT per frame, altrimenti chiede un nuovo tocco.
 Premi come sbloccherai davvero (stessa zona/orientazione). Atteso ~3/4+ riconoscimenti; se basso,
 `fprintd-delete` e ri-enrolla più denso. (La nostra esperienza: la copertura è tutto — vedi
 `docs/matching.md`.)
