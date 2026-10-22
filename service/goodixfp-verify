@@ -39,7 +39,7 @@ def main():
                 return 1
             time.sleep(0.2)
     try:
-        sys.stderr.write("Tocca il sensore d'impronta...\n")
+        sys.stderr.write("Appoggia il dito e premi deciso (rullalo un po')...\n")
         sys.stderr.flush()
         s.sendall((json.dumps({"op": "verify", "user": user}) + "\n").encode())
         buf = b""
