@@ -84,6 +84,26 @@ def _close_session():
             pass
 
 
+def _reopen_or_fail():
+    """Chiude e riapre la sessione. -> None se ok, oppure un dict d'errore pronto per il socket."""
+    _close_session()
+    try:
+        _open_session()
+        return None
+    except (Exception, SystemExit) as e:
+        _close_session()
+        return {"ok": False, "reason": f"errore sensore: {str(e) or type(e).__name__}"}
+
+
+def _frozen(frames, thresh=20.0):
+    """True se i frame sono quasi identici tra loro (sensore addormentato in powerdown: grab()
+    torna un fotogramma congelato). Un contatto reale varia molto di piu' (misurato ~500 vs ~5)."""
+    import numpy as np
+    if len(frames) < 2:
+        return False
+    return float(np.stack(frames).astype(np.float32).std(axis=0).mean()) < thresh
+
+
 def _capture_burst(sensor, clear, n_frames, wait_s):
     """Raccoglie fino a n_frames frame con un dito a contatto PIENO entro wait_s secondi.
     I frame deboli (<MIN_FORCE) non contano (ma segnalano 'saw_weak'). grab() che solleva
@@ -120,22 +140,33 @@ def verify_user(user, n_frames=N_FRAMES, threshold=THRESHOLD, wait_s=WAIT_SECOND
                 _close_session()
                 return {"ok": False, "reason": f"errore sensore: {str(e) or type(e).__name__}"}
 
-        # 2) cattura la raffica; se la sessione e' morta la riapro una volta e ritento
+        # 2) cattura la raffica. Prima RISVEGLIA lo scan: dopo l'idle il sensore va in powerdown e
+        #    grab() torna un frame congelato (misurato: frame tutti identici, score 0 secco). Se la
+        #    cattura esplode o i frame restano congelati, riapro la sessione (init completo) e ritento.
         frames, saw_weak = None, False
         for attempt in (1, 2):
             try:
+                with contextlib.redirect_stdout(_devnull):
+                    _session["sensor"].arm()        # ri-arma FDT/scan: sveglia il sensore
                 frames, saw_weak = _capture_burst(_session["sensor"], _session["clear"], n_frames, wait_s)
-                break
             except (Exception, SystemExit) as e:
                 log(f"cattura fallita (tentativo {attempt}: {type(e).__name__}): riapro la sessione")
-                _close_session()
                 if attempt == 2:
-                    return {"ok": False, "reason": f"errore sensore: {str(e) or type(e).__name__}"}
-                try:
-                    _open_session()
-                except (Exception, SystemExit) as e2:
                     _close_session()
-                    return {"ok": False, "reason": f"errore sensore: {str(e2) or type(e2).__name__}"}
+                    return {"ok": False, "reason": f"errore sensore: {str(e) or type(e).__name__}"}
+                err = _reopen_or_fail()
+                if err:
+                    return err
+                continue
+            if frames and _frozen(frames):          # sensore addormentato: frame congelati
+                if attempt == 2:
+                    return {"ok": False, "reason": "sensore addormentato: riprova"}
+                log("frame congelati (sensore addormentato): riapro la sessione e ritento")
+                err = _reopen_or_fail()
+                if err:
+                    return err
+                continue
+            break
 
         if not frames:
             return {"ok": False,
