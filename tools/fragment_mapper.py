@@ -19,6 +19,7 @@ import cv2
 import sigfm
 import coverage
 import mosaic as mz
+import posegraph
 from preprocessor import preprocess
 
 W, H = 80, 64
@@ -26,6 +27,8 @@ CANVAS = 600
 REG_MIN = 7          # inlier per agganciare/estendere un pezzo
 BRIDGE_MIN = 11      # inlier (su entrambi i pezzi) per fondere: piu' severo, evita fusioni errate
 FAST_INL = 14        # aggancio "solido" sul frammento corrente -> fast-path senza cercare su tutti
+NEIGH_DIST = 45      # px: due keyframe entro questa distanza si sovrappongono -> arco pose-graph
+LOOP_MIN_SEP = 12    # se un arco collega keyframe lontani nell'ordine di inserimento = chiusura anello
 SPACING = 9          # px minimi di spostamento per un nuovo keyframe
 VERIFY_MIN = 300     # soglia SIGFM (= enroll_engine.ACCEPT)
 IDENT = np.array([[1, 0, 0], [0, 1, 0]], np.float32)
@@ -38,6 +41,7 @@ def _center(pose):
 class Fragment:
     def __init__(self):
         self.kfs = []        # [{feats, thumb, pose(2x3 coord-pezzo)}]
+        self.edges = []      # archi pose-graph: (i, j, (dx,dy,dth), w)
         self.origin = np.array([[1, 0, CANVAS / 2 - W / 2],
                                 [0, 1, CANVAS / 2 - H / 2]], np.float32)
         self.acc = np.zeros((CANVAS, CANVAS), np.float32)
@@ -52,6 +56,13 @@ class Fragment:
     def add_kf(self, feats, thumb, pose):
         self.kfs.append({"feats": feats, "thumb": thumb, "pose": pose})
         self._blend(thumb, pose)
+        return len(self.kfs) - 1
+
+    def apply_poses(self, xyt):
+        """Sostituisce le pose dei keyframe con quelle ottimizzate (Nx3) e ricostruisce."""
+        for kf, p in zip(self.kfs, xyt):
+            kf["pose"] = posegraph.xyt_to_pose(p[0], p[1], p[2])
+        self.rebuild()
 
     def rebuild(self):
         self.acc[:] = 0; self.cnt[:] = 0
@@ -117,12 +128,40 @@ class FragmentMapper:
         self.prev = {"feats": feats, "pose": IDENT.copy(), "frag": fr}
         return self._info(status, True, fr, IDENT.copy(), [])
 
+    def _link_and_optimize(self, frag, j):
+        """Collega il keyframe j ai vicini SPAZIALI (archi pose-graph); se chiude un anello
+        (arco verso un keyframe lontano nel tempo) ottimizza e raddrizza la deriva."""
+        cj = _center(frag.kfs[j]["pose"])[:2]
+        fj = frag.kfs[j]["feats"]
+        loop = False
+        for i, kf in enumerate(frag.kfs):
+            if i == j:
+                continue
+            if np.hypot(*(cj - _center(kf["pose"])[:2])) > NEIGH_DIST:
+                continue
+            ok, M, inl = coverage.estimate_affine(kf["feats"], fj)    # j -> i
+            if ok and inl >= REG_MIN:
+                z = (float(M[0, 2]), float(M[1, 2]), float(np.arctan2(M[1, 0], M[0, 0])))
+                frag.edges.append((i, j, z, float(inl)))
+                if abs(i - j) > LOOP_MIN_SEP:
+                    loop = True
+        if loop and len(frag.kfs) >= 4:
+            try:
+                xyt = np.array([posegraph.pose_to_xyt(kf["pose"]) for kf in frag.kfs])
+                frag.apply_poses(posegraph.optimize(xyt, frag.edges))
+                return True
+            except Exception:
+                pass
+        return False
+
     def _place(self, frag, feats, img, pose, inl, status):
         """Piazza un frame a una posa data su un frammento; aggiorna last/current/prev."""
         dmin = min(np.hypot(*(_center(pose)[:2] - c[:2])) for c in frag.centers())
         placed = dmin >= SPACING
         if placed:
-            frag.add_kf(feats, img, pose)
+            j = frag.add_kf(feats, img, pose)
+            if self._link_and_optimize(frag, j):
+                pose = frag.kfs[j]["pose"]      # posa raddrizzata dall'ottimizzazione
         self.last = (frag, pose); self.current = frag
         self.prev = {"feats": feats, "pose": pose, "frag": frag}
         return self._info(status if placed else "già coperto qui", placed, frag, pose, [], inl)
@@ -153,8 +192,7 @@ class FragmentMapper:
             poseA = mz._compose(kfA["pose"], MA)
             dmin = min(np.hypot(*(_center(poseA)[:2] - c[:2])) for c in anchor.centers())
             placed = dmin >= SPACING
-            if placed:
-                anchor.add_kf(feats, img, poseA)
+            jj = anchor.add_kf(feats, img, poseA) if placed else None
             bridged = []
             for key, (fr, (kfB, MB, inlB)) in list(hits.items()):
                 if fr is anchor or inlB < BRIDGE_MIN:
@@ -168,6 +206,8 @@ class FragmentMapper:
                 bridged.append(fr)
             if bridged:
                 anchor.rebuild()
+            elif jj is not None and self._link_and_optimize(anchor, jj):
+                poseA = anchor.kfs[jj]["pose"]     # raddrizzata dal pose-graph (chiusura anello)
             reloc = (anchor is not cur)
             self.last = (anchor, poseA); self.current = anchor
             self.prev = {"feats": feats, "pose": poseA, "frag": anchor}
