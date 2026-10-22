@@ -24,10 +24,24 @@ resta il driver libfprint (Strada B, `docs/porting-c.md`).
 - Il demone non tocca mai la flash del sensore (niente provisioning E0) e non restituisce mai
   dati biometrici, solo esito + score.
 
-## Installazione
+## Installazione rapida (script)
 
-Assumiamo il repository in `/opt/goodix-driver` (adatta i percorsi se diverso; il `.service` e il
-`GOODIXFP_REPO` vanno allineati).
+Il progetto gira come servizio di sistema da `/opt/goodix-driver` (copia di produzione, di
+proprietà di root: il codice di autenticazione non deve essere scrivibile da un utente normale).
+Lo sviluppo resta in `~/goodix-driver`.
+
+```bash
+sudo service/install.sh        # utente+gruppo, deploy in /opt (venv ricreato + PSK), udev, systemd
+# ...registra un'impronta e collauda il socket (lo stampa install.sh), POI colleghi PAM...
+sudo service/deploy.sh         # ri-sincronizza /opt dopo ogni modifica al codice
+sudo service/uninstall.sh      # rimuove tutto (aggiungi --purge per impronte+utente)
+```
+
+`install.sh` **non** tocca PAM: lo colleghi a mano col collaudo sicuro qui sotto. Il resto di
+questa pagina spiega i singoli passi (utili se preferisci farli manualmente o per capire cosa fanno
+gli script).
+
+## Installazione manuale (equivalente agli script)
 
 ```bash
 # 1. utente e gruppo di sistema dedicati
