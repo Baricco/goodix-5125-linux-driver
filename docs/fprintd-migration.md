@@ -31,10 +31,13 @@ sudo cp /etc/pam.d/sudo.bak /etc/pam.d/sudo   # rimuove la nostra riga pam_exec 
 ## 1. Dipendenze mancanti (il resto del toolchain c'è già)
 
 ```fish
-sudo pacman -S --needed opencv doctest meson fprintd gobject-introspection libgusb gtk-doc mbedtls
+sudo pacman -S --needed opencv doctest meson fprintd gobject-introspection libgusb gtk-doc mbedtls glib2-devel
 ```
 Note sui nomi/pacchetti:
 - GUsb su Arch/CachyOS è `libgusb` (non `gusb`).
+- **`glib2-devel` obbligatorio**: la `glib2` recente di Arch/CachyOS non spedisce più
+  `glib-mkenums`/`glib-genmarshal` (ora in `glib2-devel`); senza, il build fallisce con
+  `Program /usr/bin/glib-mkenums found: NO`.
 - **`mbedtls` (4.x) è obbligatorio**: il driver usa l'API mbedtls 4.x e il build fa
   `find_library('mbedtls')` → cerca `/usr/lib/libmbedtls.so`. Avere solo `mbedtls3` (3.x LTS) NON
   basta: espone l'unversioned solo in `/usr/lib/mbedtls3/`, e il build fallisce con
