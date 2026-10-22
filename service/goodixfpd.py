@@ -38,6 +38,7 @@ SOCKET_PATH = os.environ.get("GOODIXFP_SOCKET", "/run/goodixfpd/sock")
 STATE_DIR = os.environ.get("GOODIXFP_STATE", "/var/lib/goodixfp")
 N_FRAMES = int(os.environ.get("GOODIXFP_FRAMES", "5"))
 THRESHOLD = int(os.environ.get("GOODIXFP_THRESHOLD", "300"))
+WAIT_SECONDS = float(os.environ.get("GOODIXFP_WAIT", "10"))   # attesa max del dito per verify
 
 _hw_lock = threading.Lock()   # un solo sensore: le verify si serializzano
 
@@ -69,41 +70,52 @@ def load_templates(user):
 
 
 # ------------------------------------------------------------------ verifica HW
-def verify_user(user, n_frames=N_FRAMES, threshold=THRESHOLD):
-    """Acquisisce una raffica da un singolo tocco e la confronta con le impronte dell'utente.
-    Accetta se ANCHE UN SOLO frame supera la soglia su una qualunque impronta (la raffica cattura
-    i frame buoni; cfr. docs/matching.md). Ritorna dict pronto per il socket."""
+def verify_user(user, n_frames=N_FRAMES, threshold=THRESHOLD, wait_s=WAIT_SECONDS):
+    """Attende il dito e confronta una raffica di frame con le impronte dell'utente.
+
+    Usa la CATTURA CONTINUA (grab) con gate di forza — lo stesso percorso validato dalla GUI sul
+    banco — invece del loop arm/wait_touch (fdt-down non blocca e "scappa"). Raccoglie fino a
+    n_frames frame con un dito presente entro wait_s secondi; accetta appena un frame supera la
+    soglia su una qualunque impronta (la raffica cattura i frame buoni; cfr. docs/matching.md)."""
     templates = load_templates(user)
     if not templates:
         return {"ok": False, "reason": "nessuna impronta registrata per l'utente"}
 
     import sensor as sensormod
+    import coverage
     with _hw_lock:
         s = sensormod.Sensor()
         try:
-            s.open()               # self-healing: reset USB + sync + TLS
-            s.capture_clear()      # porta il sensore in stato pronto
-            s.arm()
+            s.open()                   # self-healing: reset USB + sync + TLS
+            clear = s.capture_clear()  # baseline di sessione, per il gate di forza
             best = {"score": 0, "finger": None}
-            for i in range(n_frames):
+            got = 0
+            deadline = time.time() + wait_s
+            while time.time() < deadline and got < n_frames:
                 try:
-                    frame = s.wait_touch_and_capture() if i == 0 else s.grab()
+                    frame = s.grab()
                 except Exception as e:
-                    log(f"frame {i} fallito: {type(e).__name__}")
+                    log(f"grab fallito: {type(e).__name__}")
                     continue
+                _, finger_present = coverage.frame_quality(frame, clear)
+                if not finger_present:
+                    continue           # nessun dito: continua ad aspettare
+                got += 1
                 for name, t in templates:
                     ok, score, _ = t.verify(frame, threshold=threshold)
                     if score > best["score"]:
                         best = {"score": int(score), "finger": name}
                     if ok:
                         return {"ok": True, "finger": name, "score": int(score)}
+            if got == 0:
+                return {"ok": False, "reason": "nessun dito rilevato"}
             return {"ok": False, "reason": "nessuna corrispondenza",
                     "best": best["score"], "finger": best["finger"]}
         except Exception as e:
             return {"ok": False, "reason": f"errore sensore: {type(e).__name__}: {e}"}
         finally:
             try:
-                s.close()          # teardown pulito: evita il wedge
+                s.close()              # teardown pulito: evita il wedge
             except Exception:
                 pass
 
