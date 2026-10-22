@@ -38,9 +38,15 @@ def main():
             if time.time() >= deadline:
                 return 1
             time.sleep(0.2)
+    # Sotto pam_exec lo stderr non arriva al terminale: scrivo l'invito su /dev/tty (il terminale
+    # di controllo), cosi' l'utente SA quando premere. Fallback a stderr se non c'e' tty.
     try:
-        sys.stderr.write("Appoggia il dito e premi deciso (rullalo un po')...\n")
-        sys.stderr.flush()
+        _tty = open("/dev/tty", "w")
+    except OSError:
+        _tty = sys.stderr
+    try:
+        _tty.write("Appoggia il dito sul lettore (fermo e deciso)...\n")
+        _tty.flush()
         s.sendall((json.dumps({"op": "verify", "user": user}) + "\n").encode())
         buf = b""
         while b"\n" not in buf:
@@ -49,9 +55,14 @@ def main():
                 return 1
             buf += chunk
         res = json.loads(buf.split(b"\n", 1)[0].decode())
-        if not res.get("ok") and res.get("reason"):
-            sys.stderr.write(f"  ({res['reason']})\n")
-        return 0 if res.get("ok") else 1
+        if res.get("ok"):
+            _tty.write("  impronta riconosciuta.\n")
+            _tty.flush()
+            return 0
+        if res.get("reason"):
+            _tty.write(f"  ({res['reason']})\n")
+            _tty.flush()
+        return 1
     except (OSError, ValueError):
         return 1
     finally:
