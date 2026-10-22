@@ -83,21 +83,27 @@ class Sensor:
         raise SystemError("sync fallito")
 
     def open(self):
-        # SELF-HEALING: resetta il device prima di parlarci, cosi' uno stato sporco lasciato da
-        # una sessione precedente (es. crash a meta' TLS) non blocca l'init.
-        reset_usb()
-        time.sleep(0.4)
+        # Prova PRIMA a parlarci diretto: dopo un teardown pulito il device e' gia' a posto.
+        # Il reset USB rienumera il sensore (nuovo indirizzo) e, fatto a OGNI open, lo fa sparire
+        # per un istante ai verify consecutivi -> "sensore non trovato". Quindi il reset resta solo
+        # come SELF-HEALING, quando la sync diretta fallisce (stato sporco da crash a meta' TLS).
+        # (detach_kernel fa sys.exit se il device non e' enumerato: catturo anche SystemExit.)
+        fw = None
         try:
             fw = self._connect()
-        except Exception:
-            reset_usb()                 # secondo tentativo dopo un reset piu' deciso
-            time.sleep(0.6)
-            try:
-                fw = self._connect()
-            except Exception:
+        except (Exception, SystemExit):
+            for wait in (0.5, 0.9):
+                reset_usb()
+                time.sleep(wait)
+                try:
+                    fw = self._connect()
+                    break
+                except (Exception, SystemExit):
+                    fw = None
+            if fw is None:
                 raise SystemError(
-                    "sensore non sincronizzabile dopo reset USB: potrebbe essere in uno stato "
-                    "bloccato profondo (serve recovery). Vedi tools/sensor_recover.py")
+                    "sensore non sincronizzabile neanche dopo reset USB: potrebbe essere in uno "
+                    "stato bloccato profondo (serve recovery). Vedi tools/sensor_recover.py")
         if not fw.startswith("GF_ST411SEC_APP_125"):
             raise SystemError(f"firmware non previsto: {fw}")
         self.firmware = fw

@@ -24,14 +24,19 @@ install -m755 "$SRC"/service/goodixfp-verify     "$DEST"/service/
 install -m644 "$SRC"/captures/config90.bin       "$DEST"/captures/
 chown -R root:root "$DEST"
 
-echo "[deploy] (ri)creo il venv di produzione in $DEST/tools/.venv (solo dipendenze del demone)"
-rm -rf "$DEST/tools/.venv"
-python3 -m venv "$DEST/tools/.venv"
-"$DEST/tools/.venv/bin/pip" -q install --upgrade pip
-# Tutte le dipendenze del trasporto goodix-fp-dump (pyusb, periphery, spidev, crcmod, crccheck,
-# pycryptodome: goodix.py/protocol.py le importano in cima) + numpy/opencv per il matching.
-# Il demone NON usa PySide6 (solo la GUI di enroll): quello resta fuori.
-"$DEST/tools/.venv/bin/pip" -q install -r "$SRC/goodix-fp-dump/requirements.txt" numpy opencv-python-headless
+# Il venv si ricrea solo se manca (o con --venv): i redeploy di solo codice restano veloci.
+if [ ! -x "$DEST/tools/.venv/bin/python" ] || [ "${1:-}" = "--venv" ]; then
+  echo "[deploy] (ri)creo il venv di produzione in $DEST/tools/.venv (solo dipendenze del demone)"
+  rm -rf "$DEST/tools/.venv"
+  python3 -m venv "$DEST/tools/.venv"
+  "$DEST/tools/.venv/bin/pip" -q install --upgrade pip
+  # Tutte le dipendenze del trasporto goodix-fp-dump (pyusb, periphery, spidev, crcmod, crccheck,
+  # pycryptodome: goodix.py/protocol.py le importano in cima) + numpy/opencv per il matching.
+  # Il demone NON usa PySide6 (solo la GUI di enroll): quello resta fuori.
+  "$DEST/tools/.venv/bin/pip" -q install -r "$SRC/goodix-fp-dump/requirements.txt" numpy opencv-python-headless
+else
+  echo "[deploy] venv gia' presente, lo riuso (usa '--venv' per ricrearlo da zero)"
+fi
 
 echo "[deploy] copio la PSK appaiata al sensore (NON la rigenero: è la chiave del tuo sensore)"
 install -d -o root -g "$GROUP" -m750 "$DEST/state"
