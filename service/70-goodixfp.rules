@@ -1,0 +1,14 @@
+# Accesso al sensore Goodix 27c6:5125 per il demone di sistema goodixfpd.
+#
+# Assegna il device al gruppo 'goodixfp' (mode 0660) cosi' il demone, che gira come utente
+# 'goodixfp', puo' parlarci senza essere root. Mantiene anche TAG+="uaccess" cosi' l'utente
+# interattivo loggato (seat) conserva l'accesso per la GUI di enroll.
+#
+# Installazione: copiare in /etc/udev/rules.d/ e ricaricare:
+#   sudo cp service/70-goodixfp.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload && sudo udevadm trigger
+#
+# NB: sostituisce la vecchia /etc/udev/rules.d/70-goodix-5125.rules (solo uaccess) di questo PC.
+
+SUBSYSTEM=="usb", ATTR{idVendor}=="27c6", ATTR{idProduct}=="5125", \
+  MODE="0660", GROUP="goodixfp", TAG+="uaccess", TAG+="systemd"

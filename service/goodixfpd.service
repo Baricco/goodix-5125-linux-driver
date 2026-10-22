@@ -1,0 +1,44 @@
+[Unit]
+Description=Goodix 27c6:5125 fingerprint authentication daemon
+Documentation=file:///docs/pam-integration.md
+# Parte quando il sensore e' presente (regola udev che marca systemd).
+After=systemd-udevd.service
+
+[Service]
+Type=simple
+# Utente di sistema dedicato (crearlo: vedi docs/pam-integration.md). NON gira come root:
+# accede al sensore solo tramite il gruppo 'goodixfp' (regola udev 70-goodixfp.rules).
+User=goodixfp
+Group=goodixfp
+SupplementaryGroups=goodixfp
+
+# Percorso del repository (contiene tools/, goodix-fp-dump/, driver_5125.py).
+# Adatta WorkingDirectory/GOODIXFP_REPO all'installazione reale.
+WorkingDirectory=/opt/goodix-driver
+Environment=GOODIXFP_REPO=/opt/goodix-driver
+Environment=GOODIXFP_STATE=/var/lib/goodixfp
+Environment=GOODIXFP_SOCKET=/run/goodixfpd/sock
+ExecStart=/opt/goodix-driver/tools/.venv/bin/python /opt/goodix-driver/service/goodixfpd.py
+
+# /run/goodixfpd creato con gruppo goodixfp -> il socket 0660 e' raggiungibile da root (PAM).
+RuntimeDirectory=goodixfpd
+RuntimeDirectoryMode=0750
+StateDirectory=goodixfp
+StateDirectoryMode=0750
+
+# Irrobustimento: il demone parla solo USB + socket locale, niente rete.
+RestartSec=2
+Restart=on-failure
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateNetwork=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX
+# Accesso ai device USB (il sensore).
+DeviceAllow=char-usb_device rw
+
+[Install]
+WantedBy=multi-user.target

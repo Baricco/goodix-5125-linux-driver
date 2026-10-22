@@ -1,0 +1,14 @@
+# Esempio di integrazione PAM per goodixfpd — NON copiare alla cieca.
+# Vedi docs/pam-integration.md per la procedura sicura (prima sudo, poi login, mai lockout).
+#
+# L'impronta e' un fattore AGGIUNTIVO 'sufficient': se il sensore accetta, l'auth passa;
+# se fallisce o il demone non c'e', PAM PROSEGUE con la password (riga pam_unix sotto).
+# Non usare MAI 'required' da solo per l'impronta: chiuderebbe fuori l'utente.
+#
+# --- /etc/pam.d/sudo (esempio, in cima allo stack auth) ---
+#
+#   auth  sufficient  pam_exec.so  quiet  /usr/local/lib/goodixfp/goodixfp-verify
+#   auth  include     system-auth          # <- lo stack password esistente (fallback)
+#
+# pam_exec passa l'utente in PAM_USER; il client esce 0 su riconoscimento, 1 altrimenti.
+# 'quiet' silenzia l'output del client in PAM (l'invito "Tocca il sensore" resta su stderr).
