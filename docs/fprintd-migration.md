@@ -108,6 +108,10 @@ La tua `noctalia-greeter 1.7.0` ha già il supporto (stringhe `allow_empty_passw
 allow_empty_password = true
 # request_timeout = 60   # opzionale (0 disabilita il timeout)
 ```
+**Attenzione:** la chiave DEVE stare **sotto l'header `[auth]`**, non a livello root del file (una
+`allow_empty_password = true` messa prima di qualsiasi `[sezione]` finisce nella tabella root e
+viene ignorata). Verifica con `sudo cat .../greeter.toml | grep -A1 '\[auth\]'`.
+
 Al login: **tocchi per entrare, oppure digiti la password** (la password digitata va in coda e
 risponde al prompt solo se l'impronta fallisce/scade).
 
