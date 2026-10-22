@@ -31,11 +31,17 @@ sudo cp /etc/pam.d/sudo.bak /etc/pam.d/sudo   # rimuove la nostra riga pam_exec 
 ## 1. Dipendenze mancanti (il resto del toolchain c'è già)
 
 ```fish
-sudo pacman -S --needed opencv doctest meson fprintd gobject-introspection libgusb gtk-doc
+sudo pacman -S --needed opencv doctest meson fprintd gobject-introspection libgusb gtk-doc mbedtls
 ```
-(Il pacchetto GUsb su Arch/CachyOS è `libgusb` (non `gusb`). `mbedtls3` è già presente: l'installer
-lo usa in fallback a `mbedtls` 4.x. `ninja gcc pkgconf python openssl glib2 nss pixman libgudev
-systemd-libs` già installati.)
+Note sui nomi/pacchetti:
+- GUsb su Arch/CachyOS è `libgusb` (non `gusb`).
+- **`mbedtls` (4.x) è obbligatorio**: il driver usa l'API mbedtls 4.x e il build fa
+  `find_library('mbedtls')` → cerca `/usr/lib/libmbedtls.so`. Avere solo `mbedtls3` (3.x LTS) NON
+  basta: espone l'unversioned solo in `/usr/lib/mbedtls3/`, e il build fallisce con
+  `ERROR: C shared or static library 'mbedtls' not found`. `mbedtls` e `mbedtls3` **coesistono**
+  (header isolati: `/usr/include/mbedtls/` vs `/usr/include/mbedtls3/`); non rimuovere `mbedtls3`
+  (serve a `librist`).
+- Già installati: `ninja gcc pkgconf python openssl glib2 nss pixman libgudev systemd-libs`.
 
 ## 2. Clona e installa il driver
 
