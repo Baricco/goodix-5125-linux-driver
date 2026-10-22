@@ -20,6 +20,8 @@ Template per-utente: GOODIXFP_STATE/<utente>/*.npz (default /var/lib/goodixfp). 
 Configurazione via ambiente: GOODIXFP_SOCKET, GOODIXFP_STATE, GOODIXFP_FRAMES, GOODIXFP_THRESHOLD.
 """
 
+import contextlib
+import datetime
 import json
 import os
 import pwd
@@ -39,6 +41,7 @@ STATE_DIR = os.environ.get("GOODIXFP_STATE", "/var/lib/goodixfp")
 N_FRAMES = int(os.environ.get("GOODIXFP_FRAMES", "5"))
 THRESHOLD = int(os.environ.get("GOODIXFP_THRESHOLD", "300"))
 WAIT_SECONDS = float(os.environ.get("GOODIXFP_WAIT", "10"))   # attesa max del dito per verify
+LOG_VERIFY = os.environ.get("GOODIXFP_LOG", "") not in ("", "0")  # diagnostica: salva i frame
 
 _hw_lock = threading.Lock()   # un solo sensore: le verify si serializzano
 
@@ -83,41 +86,82 @@ def verify_user(user, n_frames=N_FRAMES, threshold=THRESHOLD, wait_s=WAIT_SECOND
 
     import sensor as sensormod
     import coverage
+    import numpy as np
+    devnull = open(os.devnull, "w")           # silenzia lo spam della libreria goodix
+    result = None
+    clear = None
+    rec = []                                   # diagnostica: (frame, forza, best_score)
     with _hw_lock:
         s = sensormod.Sensor()
         try:
-            s.open()                   # self-healing: reset USB + sync + TLS
-            clear = s.capture_clear()  # baseline di sessione, per il gate di forza
-            best = {"score": 0, "finger": None}
-            got = 0
-            deadline = time.time() + wait_s
-            while time.time() < deadline and got < n_frames:
-                try:
-                    frame = s.grab()
-                except Exception as e:
-                    log(f"grab fallito: {type(e).__name__}")
-                    continue
-                _, finger_present = coverage.frame_quality(frame, clear)
-                if not finger_present:
-                    continue           # nessun dito: continua ad aspettare
-                got += 1
-                for name, t in templates:
-                    ok, score, _ = t.verify(frame, threshold=threshold)
-                    if score > best["score"]:
-                        best = {"score": int(score), "finger": name}
-                    if ok:
-                        return {"ok": True, "finger": name, "score": int(score)}
-            if got == 0:
-                return {"ok": False, "reason": "nessun dito rilevato"}
-            return {"ok": False, "reason": "nessuna corrispondenza",
-                    "best": best["score"], "finger": best["finger"]}
+            with contextlib.redirect_stdout(devnull):
+                s.open()                       # self-healing: reset USB + sync + TLS
+                clear = s.capture_clear()      # baseline di sessione, per il gate di forza
+                best = {"score": 0, "finger": None}
+                got = 0
+                deadline = time.time() + wait_s
+                while time.time() < deadline and got < n_frames:
+                    try:
+                        frame = s.grab()
+                    except Exception:
+                        continue
+                    strength, finger_present = coverage.frame_quality(frame, clear)
+                    if not finger_present:
+                        continue               # nessun dito: continua ad aspettare
+                    got += 1
+                    fbest, fname, hit = 0, None, False
+                    for name, t in templates:
+                        ok, score, _ = t.verify(frame, threshold=threshold)
+                        if score > fbest:
+                            fbest, fname = int(score), name
+                        if ok:
+                            hit = True
+                    if LOG_VERIFY:
+                        rec.append((frame.astype(np.uint16), float(strength), fbest))
+                    if fbest > best["score"]:
+                        best = {"score": fbest, "finger": fname}
+                    if hit:
+                        result = {"ok": True, "finger": fname, "score": fbest}
+                        break
+            if result is None:
+                result = ({"ok": False, "reason": "nessun dito rilevato"} if got == 0 else
+                          {"ok": False, "reason": "nessuna corrispondenza",
+                           "best": best["score"], "finger": best["finger"]})
         except Exception as e:
-            return {"ok": False, "reason": f"errore sensore: {type(e).__name__}: {e}"}
+            result = {"ok": False, "reason": f"errore sensore: {type(e).__name__}: {e}"}
         finally:
             try:
-                s.close()              # teardown pulito: evita il wedge
+                with contextlib.redirect_stdout(devnull):
+                    s.close()                  # teardown pulito: evita il wedge
             except Exception:
                 pass
+    if LOG_VERIFY and rec and clear is not None:
+        _save_verify_log(user, clear, rec, result)
+    return result
+
+
+def _save_verify_log(user, clear, rec, result):
+    """Salva i frame catturati durante una verify (grezzi + PNG + forza + score) per l'analisi
+    offline. Solo con GOODIXFP_LOG=1. Va in captures/verify_log/ (gitignorato)."""
+    import numpy as np
+    out = os.path.join(_REPO, "captures", "verify_log")
+    os.makedirs(out, exist_ok=True)
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    frames = np.stack([r[0] for r in rec])
+    np.savez_compressed(os.path.join(out, f"daemon_{ts}.npz"),
+                        frames=frames, clear=clear.astype(np.uint16),
+                        strengths=np.array([r[1] for r in rec], np.float32),
+                        scores=np.array([r[2] for r in rec], np.int32),
+                        result=json.dumps(result))
+    try:
+        sys.path.insert(0, os.path.join(_REPO, "tools"))
+        from preprocessor import preprocess, to_png
+        for i, (frame, _st, sc) in enumerate(rec):
+            to_png(preprocess(frame, clear), os.path.join(out, f"daemon_{ts}_{i:02d}_s{sc}.png"))
+    except Exception:
+        pass
+    log(f"  [log] salvati {len(rec)} frame in captures/verify_log/daemon_{ts}.* "
+        f"(forze={[round(r[1],2) for r in rec]}, score={[r[2] for r in rec]})")
 
 
 # ----------------------------------------------------------------- server socket
