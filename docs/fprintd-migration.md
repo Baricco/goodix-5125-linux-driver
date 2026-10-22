@@ -31,10 +31,11 @@ sudo cp /etc/pam.d/sudo.bak /etc/pam.d/sudo   # rimuove la nostra riga pam_exec 
 ## 1. Dipendenze mancanti (il resto del toolchain c'è già)
 
 ```fish
-sudo pacman -S --needed opencv doctest meson fprintd gobject-introspection gusb gtk-doc
+sudo pacman -S --needed opencv doctest meson fprintd gobject-introspection libgusb gtk-doc
 ```
-(`mbedtls3` è già presente: l'installer lo usa in fallback a `mbedtls` 4.x. `ninja gcc pkgconf
-python openssl glib2 nss pixman libgudev systemd-libs` già installati.)
+(Il pacchetto GUsb su Arch/CachyOS è `libgusb` (non `gusb`). `mbedtls3` è già presente: l'installer
+lo usa in fallback a `mbedtls` 4.x. `ninja gcc pkgconf python openssl glib2 nss pixman libgudev
+systemd-libs` già installati.)
 
 ## 2. Clona e installa il driver
 
