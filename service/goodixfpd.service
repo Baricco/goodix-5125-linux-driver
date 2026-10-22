@@ -36,9 +36,10 @@ PrivateNetwork=true
 PrivateTmp=true
 ProtectKernelTunables=true
 ProtectControlGroups=true
-RestrictAddressFamilies=AF_UNIX
-# Accesso ai device USB (il sensore).
-DeviceAllow=char-usb_device rw
+# AF_UNIX per il socket, AF_NETLINK perche' libusb lo usa per enumerare/hotplug.
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+# Accesso al sensore USB: lasciato alla regola udev (GROUP=goodixfp), NON al device cgroup.
+# Un DeviceAllow troppo stretto qui negherebbe /dev/bus/usb e il demone non vedrebbe il sensore.
 
 [Install]
 WantedBy=multi-user.target

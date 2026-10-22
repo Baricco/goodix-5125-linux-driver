@@ -136,8 +136,11 @@ def verify_user(user, n_frames=N_FRAMES, threshold=THRESHOLD, wait_s=WAIT_SECOND
                 else:
                     result = {"ok": False, "reason": "nessuna corrispondenza",
                               "best": best["score"], "finger": best["finger"]}
-        except Exception as e:
-            result = {"ok": False, "reason": f"errore sensore: {type(e).__name__}: {e}"}
+        except (Exception, SystemExit) as e:
+            # SystemExit: driver_5125.detach_kernel fa sys.exit se il sensore non e' accessibile
+            # (es. permessi: utente goodixfp non nel gruppo del device). Lo rendiamo un errore pulito.
+            msg = str(e) or type(e).__name__
+            result = {"ok": False, "reason": f"errore sensore: {msg}"}
         finally:
             try:
                 with contextlib.redirect_stdout(devnull):
@@ -209,7 +212,7 @@ def handle(conn):
         res = verify_user(user, int(req.get("frames", N_FRAMES)))
         log(f"  -> {res}")
         conn.sendall((json.dumps(res) + "\n").encode())
-    except Exception as e:
+    except (Exception, SystemExit) as e:
         try:
             conn.sendall((json.dumps({"ok": False, "reason": str(e)}) + "\n").encode())
         except Exception:
