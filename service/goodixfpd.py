@@ -41,6 +41,7 @@ STATE_DIR = os.environ.get("GOODIXFP_STATE", "/var/lib/goodixfp")
 N_FRAMES = int(os.environ.get("GOODIXFP_FRAMES", "5"))
 THRESHOLD = int(os.environ.get("GOODIXFP_THRESHOLD", "300"))
 WAIT_SECONDS = float(os.environ.get("GOODIXFP_WAIT", "10"))   # attesa max del dito per verify
+MIN_FORCE = float(os.environ.get("GOODIXFP_MINFORCE", "0.6"))  # forza minima del tocco per contare
 LOG_VERIFY = os.environ.get("GOODIXFP_LOG", "") not in ("", "0")  # diagnostica: salva i frame
 
 _hw_lock = threading.Lock()   # un solo sensore: le verify si serializzano
@@ -99,6 +100,7 @@ def verify_user(user, n_frames=N_FRAMES, threshold=THRESHOLD, wait_s=WAIT_SECOND
                 clear = s.capture_clear()      # baseline di sessione, per il gate di forza
                 best = {"score": 0, "finger": None}
                 got = 0
+                saw_weak = False               # visto un dito ma a contatto debole
                 deadline = time.time() + wait_s
                 while time.time() < deadline and got < n_frames:
                     try:
@@ -108,6 +110,9 @@ def verify_user(user, n_frames=N_FRAMES, threshold=THRESHOLD, wait_s=WAIT_SECOND
                     strength, finger_present = coverage.frame_quality(frame, clear)
                     if not finger_present:
                         continue               # nessun dito: continua ad aspettare
+                    if strength < MIN_FORCE:
+                        saw_weak = True        # contatto troppo leggero: non conta, aspetta meglio
+                        continue
                     got += 1
                     fbest, fname, hit = 0, None, False
                     for name, t in templates:
@@ -124,9 +129,13 @@ def verify_user(user, n_frames=N_FRAMES, threshold=THRESHOLD, wait_s=WAIT_SECOND
                         result = {"ok": True, "finger": fname, "score": fbest}
                         break
             if result is None:
-                result = ({"ok": False, "reason": "nessun dito rilevato"} if got == 0 else
-                          {"ok": False, "reason": "nessuna corrispondenza",
-                           "best": best["score"], "finger": best["finger"]})
+                if got == 0:
+                    result = {"ok": False,
+                              "reason": ("contatto debole: premi con piu' decisione" if saw_weak
+                                         else "nessun dito rilevato")}
+                else:
+                    result = {"ok": False, "reason": "nessuna corrispondenza",
+                              "best": best["score"], "finger": best["finger"]}
         except Exception as e:
             result = {"ok": False, "reason": f"errore sensore: {type(e).__name__}: {e}"}
         finally:
