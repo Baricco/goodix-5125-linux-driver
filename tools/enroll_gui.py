@@ -421,7 +421,9 @@ class MainWindow(QtWidgets.QMainWindow):
         if kind == "map":
             r = self.session.add_frame(frame)
             now = time.monotonic()
-            if r.get("placed") and now - self._last_render > 0.12:   # rendering throttled (~8/s)
+            # ridisegna la mappa (throttled ~8/s) a ogni frame AGGANCIATO, cosi' il marker "sei qui"
+            # segue l'inquadratura anche su zone gia' mappate; sui frame vuoti non muove nulla.
+            if not r["status"].startswith("vuoto") and now - self._last_render > 0.12:
                 self._show_map(); self._last_render = now
             tag = {"mappa estesa": "✓", "inizio mappa": "✓", "nuovo pezzo": "+",
                    "già coperto qui": "•", "debole": "·"}.get(

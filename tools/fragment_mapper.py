@@ -100,6 +100,12 @@ class FragmentMapper:
         return best
 
     def add_frame(self, frame):
+        # GATE DI FORZA: scarta i frame senza dito (rumore statico del sensore, forza ~0.03).
+        # Senza questo il rumore ha feature SIFT casuali e creerebbe tessere spazzatura.
+        strength, ok = coverage.frame_quality(frame, self.clear)
+        if not ok:
+            return {"status": "vuoto (niente dito)", "placed": False,
+                    "frags": len(self.frags), "strength": strength}
         img = preprocess(frame, self.clear)
         return self.ingest(sigfm.features(img), img)
 
@@ -188,8 +194,11 @@ class FragmentMapper:
         vis = cv2.cvtColor(mos, cv2.COLOR_GRAY2BGR)
         vis[hole > 0] = (40, 40, 220)
         if self.last and self.last[0] is fr:
-            poly = fr.footprint_px(self.last[1], x0, y0)
-            cv2.polylines(vis, [poly], True, (60, 220, 240), 1, cv2.LINE_AA)
+            poly = fr.footprint_px(self.last[1], x0, y0)   # marker "sei qui"
+            overlay = vis.copy()
+            cv2.fillPoly(overlay, [poly], (70, 200, 240))
+            cv2.addWeighted(overlay, 0.30, vis, 0.70, 0, vis)
+            cv2.polylines(vis, [poly], True, (80, 230, 255), 2, cv2.LINE_AA)
         return vis, frac
 
     def pieces(self):
