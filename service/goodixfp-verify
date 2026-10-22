@@ -11,21 +11,33 @@ import json
 import os
 import socket
 import sys
+import time
 
 SOCKET_PATH = os.environ.get("GOODIXFP_SOCKET", "/run/goodixfpd/sock")
 TIMEOUT = float(os.environ.get("GOODIXFP_CLIENT_TIMEOUT", "12"))
+CONNECT_RETRY = float(os.environ.get("GOODIXFP_CONNECT_RETRY", "3"))  # il demone puo' star partendo
 
 
 def main():
     user = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("PAM_USER", "")
     if not user:
         return 1
-    try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.settimeout(TIMEOUT)
-        s.connect(SOCKET_PATH)
-    except OSError:
-        return 1   # demone non attivo -> fallback password
+    # Riprova la connessione per qualche secondo: all'avvio/boot il demone puo' non aver ancora
+    # fatto bind del socket (Type=simple). Se proprio non c'e', torna 1 -> fallback password.
+    deadline = time.time() + CONNECT_RETRY
+    s = None
+    while True:
+        try:
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            s.settimeout(TIMEOUT)
+            s.connect(SOCKET_PATH)
+            break
+        except OSError:
+            if s is not None:
+                s.close()
+            if time.time() >= deadline:
+                return 1
+            time.sleep(0.2)
     try:
         sys.stderr.write("Tocca il sensore d'impronta...\n")
         sys.stderr.flush()
