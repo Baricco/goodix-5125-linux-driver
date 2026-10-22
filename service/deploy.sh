@@ -28,8 +28,10 @@ echo "[deploy] (ri)creo il venv di produzione in $DEST/tools/.venv (solo dipende
 rm -rf "$DEST/tools/.venv"
 python3 -m venv "$DEST/tools/.venv"
 "$DEST/tools/.venv/bin/pip" -q install --upgrade pip
-# il demone NON usa PySide6 (è solo per la GUI di enroll): installo il minimo.
-"$DEST/tools/.venv/bin/pip" -q install pyusb pycryptodome opencv-python-headless numpy
+# Tutte le dipendenze del trasporto goodix-fp-dump (pyusb, periphery, spidev, crcmod, crccheck,
+# pycryptodome: goodix.py/protocol.py le importano in cima) + numpy/opencv per il matching.
+# Il demone NON usa PySide6 (solo la GUI di enroll): quello resta fuori.
+"$DEST/tools/.venv/bin/pip" -q install -r "$SRC/goodix-fp-dump/requirements.txt" numpy opencv-python-headless
 
 echo "[deploy] copio la PSK appaiata al sensore (NON la rigenero: è la chiave del tuo sensore)"
 install -d -o root -g "$GROUP" -m750 "$DEST/state"

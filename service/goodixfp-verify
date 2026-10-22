@@ -37,6 +37,8 @@ def main():
                 return 1
             buf += chunk
         res = json.loads(buf.split(b"\n", 1)[0].decode())
+        if not res.get("ok") and res.get("reason"):
+            sys.stderr.write(f"  ({res['reason']})\n")
         return 0 if res.get("ok") else 1
     except (OSError, ValueError):
         return 1

@@ -213,8 +213,11 @@ def handle(conn):
         log(f"  -> {res}")
         conn.sendall((json.dumps(res) + "\n").encode())
     except (Exception, SystemExit) as e:
+        import traceback
+        log(f"  !! errore: {type(e).__name__}: {e}")
+        log("  !! " + traceback.format_exc().replace("\n", " | "))
         try:
-            conn.sendall((json.dumps({"ok": False, "reason": str(e)}) + "\n").encode())
+            conn.sendall((json.dumps({"ok": False, "reason": f"{type(e).__name__}: {e}"}) + "\n").encode())
         except Exception:
             pass
     finally:
