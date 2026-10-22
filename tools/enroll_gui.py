@@ -294,10 +294,13 @@ class MainWindow(QtWidgets.QMainWindow):
         vis, frac = self.session.render_main()
         if vis is not None:
             self.map_label.setPixmap(self._rgb_pix(vis))
-        main_tiles = len(self.session.main().kfs)
-        enough = "· copertura buona ✓" if (main_tiles >= 60 and frac < 0.10) else "· continua a coprire"
-        self.map_title.setText(f"{self.active_name or 'senza nome'} — {main_tiles} tessere · "
-                               f"buchi {frac * 100:.0f}% {enough}")
+        fr = self.session.view()
+        tiles = len(fr.kfs); is_main = fr is self.session.main()
+        total = sum(len(f.kfs) for f in self.session.frags)
+        piece = "pezzo principale" if is_main else "⚠ pezzo staccato"
+        enough = " · copertura buona ✓" if (is_main and tiles >= 60 and frac < 0.10) else ""
+        self.map_title.setText(f"{self.active_name or 'senza nome'} — {piece}: {tiles} tess · "
+                               f"{len(self.session.frags)} pezzi · {total} tot · buchi {frac * 100:.0f}%{enough}")
 
     # ---------------- collezione ----------------
     def _reload_fingers(self):

@@ -85,7 +85,8 @@ class FragmentMapper:
         self.clear = clear
         self.frags = []
         self.last = None        # (fragment, pose) ultimo frame piazzato
-        self.current = None     # ultimo frammento esteso (per il fast-path)
+        self.current = None     # ultimo frammento esteso (per il fast-path / vista)
+        self.prev = None        # {feats, pose, frag} ultimo frame tracciato (per l'odometria)
 
     # ---- registrazione ----
     def _best_in(self, feats, frag):
@@ -109,68 +110,83 @@ class FragmentMapper:
         img = preprocess(frame, self.clear)
         return self.ingest(sigfm.features(img), img)
 
+    def _new_fragment(self, feats, img, status):
+        fr = Fragment(); fr.add_kf(feats, img, IDENT.copy())
+        self.frags.append(fr)
+        self.last = (fr, IDENT.copy()); self.current = fr
+        self.prev = {"feats": feats, "pose": IDENT.copy(), "frag": fr}
+        return self._info(status, True, fr, IDENT.copy(), [])
+
+    def _place(self, frag, feats, img, pose, inl, status):
+        """Piazza un frame a una posa data su un frammento; aggiorna last/current/prev."""
+        dmin = min(np.hypot(*(_center(pose)[:2] - c[:2])) for c in frag.centers())
+        placed = dmin >= SPACING
+        if placed:
+            frag.add_kf(feats, img, pose)
+        self.last = (frag, pose); self.current = frag
+        self.prev = {"feats": feats, "pose": pose, "frag": frag}
+        return self._info(status if placed else "già coperto qui", placed, frag, pose, [], inl)
+
     def ingest(self, feats, img):
         if feats[1] is None or len(feats[0]) < sigfm.MIN_MATCH:
             return {"status": "debole", "placed": False, "frags": len(self.frags)}
 
         if not self.frags:
-            fr = Fragment(); fr.add_kf(feats, img, IDENT.copy())
-            self.frags.append(fr); self.last = (fr, IDENT.copy()); self.current = fr
-            return self._info("inizio mappa", True, fr, IDENT.copy(), [])
+            return self._new_fragment(feats, img, "inizio mappa")
 
-        # FAST PATH: lo scorrimento continuo resta sul frammento corrente. Provalo per primo e, se
-        # aggancia solido, estendi senza cercare su tutti i pezzi (O(1) invece di O(n_pezzi)).
+        # 1) FAST PATH: lo scorrimento continuo resta sul frammento corrente -> estendi subito.
         cur = self.current if self.current in self.frags else None
         if cur is not None:
             b = self._best_in(feats, cur)
             if b and b[2] >= FAST_INL:
-                kfA, MA, inlA = b
-                poseA = mz._compose(kfA["pose"], MA)
-                dmin = min(np.hypot(*(_center(poseA)[:2] - c[:2])) for c in cur.centers())
-                placed = dmin >= SPACING
-                if placed:
-                    cur.add_kf(feats, img, poseA)
-                self.last = (cur, poseA)
-                return self._info("mappa estesa" if placed else "già coperto qui",
-                                  placed, cur, poseA, [], inlA)
+                kf, M, inl = b
+                return self._place(cur, feats, img, mz._compose(kf["pose"], M), inl, "mappa estesa")
 
+        # 2) RICERCA COMPLETA: relocalizzazione su tutti i pezzi + ponti.
         hits = {}
         for fr in self.frags:
             b = self._best_in(feats, fr)
             if b:
                 hits[id(fr)] = (fr, b)
-        if not hits:
-            fr = Fragment(); fr.add_kf(feats, img, IDENT.copy())
-            self.frags.append(fr); self.last = (fr, IDENT.copy()); self.current = fr
-            return self._info("nuovo pezzo", True, fr, IDENT.copy(), [])
+        if hits:
+            anchor, (kfA, MA, inlA) = max(hits.values(), key=lambda v: v[1][2])
+            poseA = mz._compose(kfA["pose"], MA)
+            dmin = min(np.hypot(*(_center(poseA)[:2] - c[:2])) for c in anchor.centers())
+            placed = dmin >= SPACING
+            if placed:
+                anchor.add_kf(feats, img, poseA)
+            bridged = []
+            for key, (fr, (kfB, MB, inlB)) in list(hits.items()):
+                if fr is anchor or inlB < BRIDGE_MIN:
+                    continue
+                poseB = mz._compose(kfB["pose"], MB)
+                BtoA = mz._compose(poseA, mz._invert(poseB))
+                for kf in fr.kfs:
+                    kf["pose"] = mz._compose(BtoA, kf["pose"])
+                    anchor.kfs.append(kf)
+                self.frags.remove(fr)
+                bridged.append(fr)
+            if bridged:
+                anchor.rebuild()
+            reloc = (anchor is not cur)
+            self.last = (anchor, poseA); self.current = anchor
+            self.prev = {"feats": feats, "pose": poseA, "frag": anchor}
+            status = (f"ponte: uniti {len(bridged)} pezzi" if bridged
+                      else ("ritrovato su un pezzo" if reloc else
+                            ("mappa estesa" if placed else "già coperto qui")))
+            return self._info(status, placed or bool(bridged), anchor, poseA, bridged, inlA)
 
-        # ancora = pezzo con match migliore
-        anchor, (kfA, MA, inlA) = max(hits.values(), key=lambda v: v[1][2])
-        poseA = mz._compose(kfA["pose"], MA)            # new -> coord ancora
-        dmin = min(np.hypot(*(_center(poseA)[:2] - c[:2])) for c in anchor.centers())
-        placed = dmin >= SPACING
-        if placed:
-            anchor.add_kf(feats, img, poseA)
+        # 3) ODOMETRIA frame-a-frame: nessun keyframe aggancia, ma il frame si sovrappone al
+        #    PRECEDENTE (scorrimento lento) -> proseguo la traccia nello stesso sistema di coordinate.
+        #    Cosi' il marker non sparisce e la zona nuova entra nel pezzo corrente (niente frammenti).
+        if self.prev is not None and self.prev["frag"] in self.frags:
+            ok, M, inl = coverage.estimate_affine(self.prev["feats"], feats)   # new -> prev
+            if ok and inl >= REG_MIN:
+                pose = mz._compose(self.prev["pose"], M)
+                return self._place(self.prev["frag"], feats, img, pose, inl, "traccia")
 
-        # ponti: fonde gli altri pezzi che combaciano con inlier alti
-        bridged = []
-        for key, (fr, (kfB, MB, inlB)) in list(hits.items()):
-            if fr is anchor or inlB < BRIDGE_MIN:
-                continue
-            poseB = mz._compose(kfB["pose"], MB)
-            BtoA = mz._compose(poseA, mz._invert(poseB))
-            for kf in fr.kfs:
-                kf["pose"] = mz._compose(BtoA, kf["pose"])
-                anchor.kfs.append(kf)
-            self.frags.remove(fr)
-            bridged.append(fr)
-        if bridged:
-            anchor.rebuild()
-
-        self.last = (anchor, poseA); self.current = anchor
-        status = (f"ponte: uniti {len(bridged)} pezzi" if bridged
-                  else ("mappa estesa" if placed else "già coperto qui"))
-        return self._info(status, placed or bool(bridged), anchor, poseA, bridged, inlA)
+        # 4) PEZZO NUOVO: traccia persa davvero (dito sollevato o salto netto).
+        return self._new_fragment(feats, img, "nuovo pezzo")
 
     def _info(self, status, placed, frag, pose, bridged, inl=None):
         d = {"status": status, "placed": placed, "frags": len(self.frags),
@@ -184,9 +200,16 @@ class FragmentMapper:
     def main(self):
         return max(self.frags, key=lambda f: len(f.kfs)) if self.frags else None
 
+    def view(self):
+        """Frammento da mostrare = quello DOVE SEI ora (current), altrimenti il principale.
+        Cosi' il marker 'sei qui' resta sempre visibile anche se ti sposti su un pezzo staccato."""
+        if self.current is not None and self.current in self.frags:
+            return self.current
+        return self.main()
+
     def render_main(self):
-        """BGR del pezzo principale con buchi (rosso) e marker 'dove sei' (giallo)."""
-        fr = self.main()
+        """BGR del pezzo corrente con buchi (rosso) e marker 'sei qui'."""
+        fr = self.view()
         if fr is None:
             return None, 0.0
         mos, cnt, (x0, y0) = fr.render()
