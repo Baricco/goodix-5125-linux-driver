@@ -220,6 +220,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # centro: mappa + azioni
         self.map_title = QtWidgets.QLabel("Nessuna impronta selezionata", objectName="title")
+        # inquadratura corrente (frame live in tempo reale)
+        self.live = QtWidgets.QLabel(alignment=QtCore.Qt.AlignCenter)
+        self.live.setFixedSize(80 * 2, 64 * 2)
+        self.live.setStyleSheet("background:#0c0e13;border:1px solid #2a2f3a;border-radius:6px;")
         self.map_label = QtWidgets.QLabel(objectName="map", alignment=QtCore.Qt.AlignCenter)
         self.map_label.setMinimumSize(MAP_W, MAP_H)
         self.btn_map = QtWidgets.QPushButton("Mappa dito", objectName="danger", checkable=True)
@@ -234,8 +238,14 @@ class MainWindow(QtWidgets.QMainWindow):
         acts = QtWidgets.QHBoxLayout()
         acts.addWidget(self.btn_map); acts.addWidget(self.btn_save)
         acts.addStretch(1); acts.addWidget(self.btn_verify)
+        top = QtWidgets.QHBoxLayout()
+        top.addWidget(self.map_title, 1)
+        lv = QtWidgets.QVBoxLayout()
+        lv.addWidget(QtWidgets.QLabel("Inquadratura", objectName="status", alignment=QtCore.Qt.AlignCenter))
+        lv.addWidget(self.live)
+        top.addLayout(lv)
         right = QtWidgets.QVBoxLayout()
-        right.addWidget(self.map_title)
+        right.addLayout(top)
         right.addWidget(self.map_label, 1)
         right.addLayout(acts)
         right.addWidget(self.status)
@@ -263,6 +273,16 @@ class MainWindow(QtWidgets.QMainWindow):
                           QtGui.QImage.Format_RGB888)
         return QtGui.QPixmap.fromImage(qi.copy()).scaled(MAP_W, MAP_H, QtCore.Qt.KeepAspectRatio,
                                                          QtCore.Qt.SmoothTransformation)
+
+    def _show_live(self, frame):
+        """Mostra l'inquadratura corrente (ogni frame, in tempo reale)."""
+        img = preprocess(frame, self.clear) if self.clear is not None else frame
+        img = np.ascontiguousarray(img.astype(np.uint8))
+        qi = QtGui.QImage(img.data, img.shape[1], img.shape[0], img.shape[1],
+                          QtGui.QImage.Format_Grayscale8)
+        self.live.setPixmap(QtGui.QPixmap.fromImage(qi.copy()).scaled(
+            self.live.width(), self.live.height(), QtCore.Qt.KeepAspectRatio,
+            QtCore.Qt.SmoothTransformation))
 
     def _show_map(self):
         if not self.session or not self.session.frags:
@@ -397,6 +417,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     @QtCore.Slot(object, str)
     def on_frame(self, frame, kind):
+        self._show_live(frame)          # inquadratura corrente in tempo reale, ogni frame
         if kind == "map":
             r = self.session.add_frame(frame)
             now = time.monotonic()
