@@ -1,0 +1,19 @@
+[Unit]
+Description=Goodix 27c6:5125 cold-boot FDT baseline re-sample (finger-detect warm-up)
+# Ri-campiona la baseline FDT a freddo, PRIMA del greeter: all'avvio il sensore e' freddo e
+# la baseline salvata da una sessione calda non fa scattare il finger-detect. Ricampionata a
+# freddo (senza dito), le soglie combaciano col sensore quando arrivi al login.
+# Il device dev'essere enumerato; fprintd a questo punto NON e' ancora attivo (parte solo al
+# greeter via pam_fprintd), quindi goodix-cli puo' aprire il sensore.
+After=systemd-udevd.service
+Before=greetd.service
+
+[Service]
+Type=oneshot
+TimeoutStartSec=20
+# rm: scarta la base di un'altra temperatura -> --info la ri-campiona (gx_device_init campiona
+# solo se goodix.dat manca/non valido). || true: non blocca il boot se il device e' occupato.
+ExecStart=/bin/sh -c 'rm -f /var/lib/fprint/goodix/goodix.dat; /usr/local/bin/goodix-cli --info || true'
+
+[Install]
+WantedBy=graphical.target
