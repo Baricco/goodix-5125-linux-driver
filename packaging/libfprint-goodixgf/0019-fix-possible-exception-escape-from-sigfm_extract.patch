@@ -1,0 +1,59 @@
+From 5e1b7f13dc02483679f3d98dca63e6e0fa4de4ad Mon Sep 17 00:00:00 2001
+From: Natasha England-Elbro <natasha@natashaee.me>
+Date: Sun, 22 Jan 2023 13:45:01 +0000
+Subject: [PATCH 19/21] fix: possible exception escape from sigfm_extract
+
+---
+ libfprint/fp-image.c      |  9 +++++++++
+ libfprint/sigfm/sigfm.cpp | 16 ++++++++++------
+ 2 files changed, 19 insertions(+), 6 deletions(-)
+
+diff --git a/libfprint/fp-image.c b/libfprint/fp-image.c
+index 092580c0..3d3a172c 100644
+--- a/libfprint/fp-image.c
++++ b/libfprint/fp-image.c
+@@ -320,6 +320,15 @@ fp_image_sigfm_extract_thread_func (GTask * task, void * src_obj,
+   g_timer_stop (timer);
+   fp_dbg ("sigfm extract completed in %f secs", g_timer_elapsed (timer, NULL));
+   g_timer_destroy (timer);
++
++  if (!data->sigfm_info)
++    {
++      fp_err ("extract sigfm info failed");
++      g_task_return_new_error (task, G_IO_ERROR, G_IO_ERROR_FAILED, "SIGFM scan failed");
++      g_object_unref (task);
++      return;
++    }
++
+   if (sigfm_keypoints_count (data->sigfm_info) < 25)
+     {
+       g_task_return_new_error (task, G_IO_ERROR, G_IO_ERROR_FAILED,
+diff --git a/libfprint/sigfm/sigfm.cpp b/libfprint/sigfm/sigfm.cpp
+index 3830086a..175209b9 100644
+--- a/libfprint/sigfm/sigfm.cpp
++++ b/libfprint/sigfm/sigfm.cpp
+@@ -104,14 +104,18 @@ SigfmImgInfo* sigfm_deserialize_binary(const unsigned char* bytes, int len)
+ 
+ SigfmImgInfo* sigfm_extract(const SigfmPix* pix, int width, int height)
+ {
+-    const cv::Mat img(height, width, CV_8UC1, (void*)pix);
++    try {
++        const cv::Mat img(height, width, CV_8UC1, (void*)pix);
+ 
+-    std::vector<cv::KeyPoint> pts;
+-    cv::Mat descs;
+-    cv::SIFT::create()->detectAndCompute(img, cv::Mat(), pts, descs);
++        std::vector<cv::KeyPoint> pts;
++        cv::Mat descs;
++        cv::SIFT::create()->detectAndCompute(img, cv::Mat(), pts, descs);
+ 
+-    auto* info = new SigfmImgInfo{pts, descs};
+-    return info;
++        auto* info = new SigfmImgInfo{pts, descs};
++        return info;
++    } catch(...) {
++        return nullptr;
++    }
+ }
+ 
+ int sigfm_match_score(SigfmImgInfo* frame, SigfmImgInfo* enrolled)

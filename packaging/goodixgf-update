@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Ricostruisce libfprint-goodixgf sulla libfprint dei repo e la installa.
+#
+#   packaging/goodixgf-update            aggiorna se serve, poi makepkg -si
+#   packaging/goodixgf-update --force    ricompila anche se la versione e' la stessa
+#
+# Porta _upstream del PKGBUILD alla versione dei repo, ricalcola i checksum e
+# riapplica le stesse patch. Se una patch non si applica piu' la build si ferma
+# e resta installata la versione attuale (il lettore continua a funzionare).
+set -euo pipefail
+
+PKG="$(cd "$(dirname "$0")" && pwd)/libfprint-goodixgf"
+repo=$(LC_ALL=C pacman -Si libfprint | awk '/^Version/ {print $3; exit}' | cut -d- -f1)
+cur=$(sed -n 's/^_upstream=//p' "$PKG/PKGBUILD")
+inst=$(LC_ALL=C pacman -Q libfprint-goodixgf 2>/dev/null | awk '{print $2}' | cut -d- -f1 || true)
+echo "libfprint nei repo: $repo   PKGBUILD: $cur   installata: ${inst:-nessuna}"
+
+if [ "$(vercmp "$repo" "$cur")" -gt 0 ]; then
+  echo ">> porto il PKGBUILD a $repo"
+  sed -i "s/^_upstream=.*/_upstream=$repo/; s/^pkgrel=.*/pkgrel=1/" "$PKG/PKGBUILD"
+  (
+    cd "$PKG"
+    sums=$(makepkg -g 2>/dev/null)
+    python3 - "$sums" <<'EOF'
+import re, sys
+p = 'PKGBUILD'
+s = open(p).read()
+s = re.sub(r"sha256sums=\([^)]*\)", sys.argv[1], s, count=1)
+open(p, 'w').write(s)
+EOF
+  )
+elif [ "${1:-}" != "--force" ] && [ -n "$inst" ] && [ "$(vercmp "$cur" "$inst")" -le 0 ]; then
+  echo "gia' aggiornato."
+  exit 0
+fi
+
+cd "$PKG"
+if ! makepkg -Csif --noconfirm; then
+  echo "!! build fallita (patch non applicabili su $repo?): resta installata ${inst:-la versione precedente}." >&2
+  echo "   Ripristina il PKGBUILD con: git checkout packaging/libfprint-goodixgf/PKGBUILD" >&2
+  exit 1
+fi
+echo ">> installata libfprint-goodixgf $(sed -n 's/^_upstream=//p' PKGBUILD)"

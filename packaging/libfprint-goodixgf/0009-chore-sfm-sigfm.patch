@@ -1,0 +1,549 @@
+From 3f28ab8b1204d224f9af8564be5b3859def3ddd6 Mon Sep 17 00:00:00 2001
+From: Natasha England-Elbro <natasha@natashaee.me>
+Date: Sun, 6 Nov 2022 22:50:11 +0000
+Subject: [PATCH 09/21] chore: sfm -> sigfm
+
+---
+ libfprint/fp-image.c         | 38 +++++++++++++++++-----------------
+ libfprint/fp-image.h         | 10 ++++-----
+ libfprint/fp-print.c         | 16 +++++++--------
+ libfprint/fpi-image-device.c |  4 ++--
+ libfprint/fpi-image.h        |  2 +-
+ libfprint/fpi-print.c        | 20 +++++++++---------
+ libfprint/fpi-print.h        |  2 +-
+ libfprint/sigfm/img-info.hpp |  2 +-
+ libfprint/sigfm/sigfm.cpp    | 28 ++++++++++++-------------
+ libfprint/sigfm/sigfm.h      | 40 ++++++++++++++++++------------------
+ libfprint/sigfm/tests.cpp    | 14 ++++++-------
+ 11 files changed, 88 insertions(+), 88 deletions(-)
+
+diff --git a/libfprint/fp-image.c b/libfprint/fp-image.c
+index bfdf26cf..84b3e54f 100644
+--- a/libfprint/fp-image.c
++++ b/libfprint/fp-image.c
+@@ -170,12 +170,12 @@ typedef struct
+ 
+ typedef struct
+ {
+-  SfmImgInfo        * sfm_info;
++  SigfmImgInfo        * sigfm_info;
+   guchar            * image;
+   gint                width;
+   gint                height;
+   GAsyncReadyCallback user_cb;
+-} ExtractSfmData;
++} ExtractSigfmData;
+ 
+ static void
+ fp_image_detect_minutiae_free (DetectMinutiaeData *data)
+@@ -192,20 +192,20 @@ fp_image_detect_minutiae_free (DetectMinutiaeData *data)
+ G_DEFINE_AUTOPTR_CLEANUP_FUNC (DetectMinutiaeData, fp_image_detect_minutiae_free)
+ 
+ static void
+-fp_image_sfm_extract_free (ExtractSfmData * data)
++fp_image_sigfm_extract_free (ExtractSigfmData * data)
+ {
+   g_clear_pointer (&data->image, g_free);
+-  g_clear_pointer (&data->sfm_info, sfm_free_info);
++  g_clear_pointer (&data->sigfm_info, sigfm_free_info);
+   g_free (data);
+ }
+ 
+ static void
+-fp_image_sfm_extract_cb (GObject * source_object, GAsyncResult * res,
++fp_image_sigfm_extract_cb (GObject * source_object, GAsyncResult * res,
+                          gpointer user_data)
+ {
+   GTask * task = G_TASK (res);
+   FpImage * image;
+-  ExtractSfmData * data = g_task_get_task_data (task);
++  ExtractSigfmData * data = g_task_get_task_data (task);
+ 
+   if (!g_task_had_error (task))
+     {
+@@ -213,7 +213,7 @@ fp_image_sfm_extract_cb (GObject * source_object, GAsyncResult * res,
+ 
+       g_clear_pointer (&image->data, g_free);
+       image->data = g_steal_pointer (&data->image);
+-      image->sfm_info = g_steal_pointer (&data->sfm_info);
++      image->sigfm_info = g_steal_pointer (&data->sigfm_info);
+     }
+ 
+   if (data->user_cb)
+@@ -309,18 +309,18 @@ invert_colors (guint8 *data, gint width, gint height)
+ }
+ 
+ static void
+-fp_image_sfm_extract_thread_func (GTask * task, void * src_obj,
++fp_image_sigfm_extract_thread_func (GTask * task, void * src_obj,
+                                   void * task_data,
+                                   GCancellable * cancellable)
+ {
+-  ExtractSfmData * data = task_data;
++  ExtractSigfmData * data = task_data;
+   GTimer * timer = g_timer_new ();
+ 
+-  data->sfm_info = sfm_extract (data->image, data->width, data->height);
++  data->sigfm_info = sigfm_extract (data->image, data->width, data->height);
+   g_timer_stop (timer);
+-  fp_dbg ("sfm extract completed in %f secs", g_timer_elapsed (timer, NULL));
++  fp_dbg ("sigfm extract completed in %f secs", g_timer_elapsed (timer, NULL));
+   g_timer_destroy (timer);
+-  if (sfm_keypoints_count (data->sfm_info) == 0)
++  if (sigfm_keypoints_count (data->sigfm_info) == 0)
+     {
+       g_task_return_new_error (task, G_IO_ERROR, G_IO_ERROR_FAILED,
+                                "No keypoints found");
+@@ -509,18 +509,18 @@ fp_image_get_minutiae (FpImage *self)
+   return self->minutiae;
+ }
+ 
+-SfmImgInfo *
+-fp_image_get_sfm_info (FpImage * self)
++SigfmImgInfo *
++fp_image_get_sigfm_info (FpImage * self)
+ {
+-  return self->sfm_info;
++  return self->sigfm_info;
+ }
+ 
+ void
+-fp_image_extract_sfm_info (FpImage * self, GCancellable * cancellable,
++fp_image_extract_sigfm_info (FpImage * self, GCancellable * cancellable,
+                            GAsyncReadyCallback callback, gpointer user_data)
+ {
+   GTask * task;
+-  ExtractSfmData * data = g_new0 (ExtractSfmData, 1);
++  ExtractSigfmData * data = g_new0 (ExtractSigfmData, 1);
+ 
+   task = g_task_new (self, cancellable, fp_image_sigfm_extract_cb, user_data);
+   g_task_set_source_tag (task, fp_image_extract_sigfm_info);
+@@ -532,8 +532,8 @@ fp_image_extract_sfm_info (FpImage * self, GCancellable * cancellable,
+   data->user_cb = callback;
+ 
+   g_task_set_task_data (task, data,
+-                        (GDestroyNotify) fp_image_sfm_extract_free);
+-  g_task_run_in_thread (task, fp_image_sfm_extract_thread_func);
++                        (GDestroyNotify) fp_image_sigfm_extract_free);
++  g_task_run_in_thread (task, fp_image_sigfm_extract_thread_func);
+ }
+ /**
+  * fp_image_detect_minutiae:
+diff --git a/libfprint/fp-image.h b/libfprint/fp-image.h
+index 1896a77a..738b59cb 100644
+--- a/libfprint/fp-image.h
++++ b/libfprint/fp-image.h
+@@ -58,9 +58,9 @@ void           fp_minutia_get_coords (FpMinutia *min,
+                                       gint      *x,
+                                       gint      *y);
+ 
+-SfmImgInfo *   fp_image_get_sfm_info (FpImage * self);
+-void           fp_image_extract_sfm_info (FpImage           * self,
+-                                          GCancellable      * cancellable,
+-                                          GAsyncReadyCallback callback,
+-                                          gpointer            user_data);
++SigfmImgInfo *   fp_image_get_sigfm_info (FpImage * self);
++void           fp_image_extract_sigfm_info (FpImage           * self,
++                                            GCancellable      * cancellable,
++                                            GAsyncReadyCallback callback,
++                                            gpointer            user_data);
+ G_END_DECLS
+diff --git a/libfprint/fp-print.c b/libfprint/fp-print.c
+index 85f60963..9f2dc4bf 100644
+--- a/libfprint/fp-print.c
++++ b/libfprint/fp-print.c
+@@ -729,9 +729,9 @@ fp_print_serialize (FpPrint *print,
+       for (int i = 0; i != print->prints->len; ++i)
+         {
+           g_variant_builder_open (&nested, G_VARIANT_TYPE ("(ay)"));
+-          SfmImgInfo * info = g_ptr_array_index (print->prints, i);
++          SigfmImgInfo * info = g_ptr_array_index (print->prints, i);
+           int slen;
+-          unsigned char * serialized = sfm_serialize_binary (info, &slen);
++          unsigned char * serialized = sigfm_serialize_binary (info, &slen);
+           g_variant_builder_add_value (
+             &nested, g_variant_new_fixed_array (G_VARIANT_TYPE_BYTE,
+                                                 serialized, slen, 1));
+@@ -910,21 +910,21 @@ fp_print_deserialize (const guchar *data,
+ 
+         for (i = 0; i < g_variant_n_children (prints); i++)
+           {
+-            g_autoptr(GVariant) sfm_data = NULL;
++            g_autoptr(GVariant) sigfm_data = NULL;
+ 
+-            sfm_data = g_variant_get_child_value (prints, i);
++            sigfm_data = g_variant_get_child_value (prints, i);
+ 
+-            GVariant * child = g_variant_get_child_value (sfm_data, 0);
++            GVariant * child = g_variant_get_child_value (sigfm_data, 0);
+             gsize slen;
+             const unsigned char * serialized =
+               g_variant_get_fixed_array (child, &slen, sizeof (unsigned char));
+             g_variant_unref (child);
+ 
+-            SfmImgInfo * sfm_info = sfm_deserialize_binary (serialized, slen);
+-            if (!sfm_info)
++            SigfmImgInfo * sigfm_info = sigfm_deserialize_binary (serialized, slen);
++            if (!sigfm_info)
+               goto invalid_format;
+ 
+-            g_ptr_array_add (result->prints, g_steal_pointer (&sfm_info));
++            g_ptr_array_add (result->prints, g_steal_pointer (&sigfm_info));
+           }
+       }
+       break;
+diff --git a/libfprint/fpi-image-device.c b/libfprint/fpi-image-device.c
+index 251e7290..963f1a3d 100644
+--- a/libfprint/fpi-image-device.c
++++ b/libfprint/fpi-image-device.c
+@@ -339,7 +339,7 @@ fpi_image_device_minutiae_detected (GObject *source_object, GAsyncResult *res, g
+             match_result = fpi_print_bz3_match (template, print,
+                                                 priv->bz3_threshold, &error);
+           else if (priv->algorithm == FPI_PRINT_SIGFM)
+-            match_result = fpi_print_sfm_match (template, print,
++            match_result = fpi_print_sigfm_match (template, print,
+                                                 priv->bz3_threshold, &error);
+ 
+           if (match_result == FPI_MATCH_SUCCESS)
+@@ -502,7 +502,7 @@ fpi_image_device_image_captured (FpImageDevice *self, FpImage *image)
+     }
+   else
+     {
+-      fp_image_extract_sfm_info (image,
++      fp_image_extract_sigfm_info (image,
+                                  fpi_device_get_cancellable (FP_DEVICE (self)),
+                                  fpi_image_device_minutiae_detected, self);
+     }
+diff --git a/libfprint/fpi-image.h b/libfprint/fpi-image.h
+index b6579a3e..54000d2e 100644
+--- a/libfprint/fpi-image.h
++++ b/libfprint/fpi-image.h
+@@ -71,7 +71,7 @@ struct _FpImage
+   guint8       *binarized;
+ 
+   GPtrArray    *minutiae;
+-  SfmImgInfo   *sfm_info;
++  SigfmImgInfo *sigfm_info;
+ 
+   gboolean      detection_in_progress;
+ };
+diff --git a/libfprint/fpi-print.c b/libfprint/fpi-print.c
+index 687ef00f..c0988f74 100644
+--- a/libfprint/fpi-print.c
++++ b/libfprint/fpi-print.c
+@@ -59,7 +59,7 @@ fpi_print_add_print (FpPrint *print, FpPrint *add)
+   void * to_add =
+     print->type == FPI_PRINT_NBIS ?
+     g_memdup2 (add->prints->pdata[0], sizeof (struct xyt_struct)) :
+-    (void *) sfm_copy_info (add->prints->pdata[0]);
++    (void *) sigfm_copy_info (add->prints->pdata[0]);
+   g_ptr_array_add (print->prints, to_add);
+ }
+ 
+@@ -86,7 +86,7 @@ fpi_print_set_type (FpPrint     *print,
+       g_assert_null (print->prints);
+       print->prints = g_ptr_array_new_with_free_func (
+         print->type == FPI_PRINT_NBIS ? g_free :
+-        (void (*)(void *))(sfm_free_info));
++        (void (*)(void *))(sigfm_free_info));
+     }
+   g_object_notify (G_OBJECT (print), "fpi-type");
+ }
+@@ -217,7 +217,7 @@ fpi_print_add_from_image (FpPrint *print,
+     }
+   else if (print->type == FPI_PRINT_SIGFM)
+     {
+-      SfmImgInfo * info = fp_image_get_sfm_info (image);
++      SigfmImgInfo * info = fp_image_get_sigfm_info (image);
+       g_ptr_array_add (print->prints, info);
+     }
+ 
+@@ -287,29 +287,29 @@ fpi_print_bz3_match (FpPrint *print_template,
+ }
+ 
+ FpiMatchResult
+-fpi_print_sfm_match (FpPrint * template, FpPrint * print,
++fpi_print_sigfm_match (FpPrint * template, FpPrint * print,
+                      gint bz3_threshold, GError ** error)
+ {
+   if (template->type != FPI_PRINT_SIGFM)
+     {
+       *error = fpi_device_error_new_msg (
+         FP_DEVICE_ERROR_NOT_SUPPORTED,
+-        "Cannot call sfm match with non-sfm print data, type was %d",
++        "Cannot call sigfm match with non-sigfm print data, type was %d",
+         template->type);
+       return FPI_MATCH_ERROR;
+     }
+-  SfmImgInfo * against = g_ptr_array_index (print->prints, 0);
++  SigfmImgInfo * against = g_ptr_array_index (print->prints, 0);
+   for (int i = 0; i != template->prints->len; ++i)
+     {
+-      SfmImgInfo * pinfo = g_ptr_array_index (template->prints, i);
+-      int score = sfm_match_score (pinfo, against);
++      SigfmImgInfo * pinfo = g_ptr_array_index (template->prints, i);
++      int score = sigfm_match_score (pinfo, against);
+       if (score < 0)
+         {
+           *error = fpi_device_error_new_msg (FP_DEVICE_ERROR_DATA_INVALID,
+-                                             "error in sfm_match_score");
++                                             "error in sigfm_match_score");
+           return FPI_MATCH_ERROR;
+         }
+-      fp_dbg ("sfm score %d/%d", score, bz3_threshold);
++      fp_dbg ("sigfm score %d/%d", score, bz3_threshold);
+       if (score >= bz3_threshold)
+         return FPI_MATCH_SUCCESS;
+     }
+diff --git a/libfprint/fpi-print.h b/libfprint/fpi-print.h
+index a87def16..5a62e934 100644
+--- a/libfprint/fpi-print.h
++++ b/libfprint/fpi-print.h
+@@ -51,7 +51,7 @@ FpiMatchResult fpi_print_bz3_match (FpPrint *print_template,
+                                     gint     bz3_threshold,
+                                     GError **error);
+ 
+-FpiMatchResult fpi_print_sfm_match (FpPrint * template, FpPrint * print,
++FpiMatchResult fpi_print_sigfm_match (FpPrint * template, FpPrint * print,
+                                     gint bz3_threshold, GError * *error);
+ 
+ /* Helpers to encode metadata into user ID strings. */
+diff --git a/libfprint/sigfm/img-info.hpp b/libfprint/sigfm/img-info.hpp
+index ab59b97f..c1ef62ff 100644
+--- a/libfprint/sigfm/img-info.hpp
++++ b/libfprint/sigfm/img-info.hpp
+@@ -12,7 +12,7 @@
+ #include <opencv2/core.hpp>
+ #include <vector>
+ 
+-struct SfmImgInfo {
++struct SigfmImgInfo {
+     std::vector<cv::KeyPoint> keypoints;
+     cv::Mat descriptors;
+ };
+\ No newline at end of file
+diff --git a/libfprint/sigfm/sigfm.cpp b/libfprint/sigfm/sigfm.cpp
+index b56fba03..3830086a 100644
+--- a/libfprint/sigfm/sigfm.cpp
++++ b/libfprint/sigfm/sigfm.cpp
+@@ -29,18 +29,18 @@
+ namespace bin {
+ 
+ template<>
+-struct serializer<SfmImgInfo> : public std::true_type {
+-    static void serialize(const SfmImgInfo& info, stream& out)
++struct serializer<SigfmImgInfo> : public std::true_type {
++    static void serialize(const SigfmImgInfo& info, stream& out)
+     {
+         out << info.keypoints << info.descriptors;
+     }
+ };
+ 
+ template<>
+-struct deserializer<SfmImgInfo> : public std::true_type {
+-    static SfmImgInfo deserialize(stream& in)
++struct deserializer<SigfmImgInfo> : public std::true_type {
++    static SigfmImgInfo deserialize(stream& in)
+     {
+-        SfmImgInfo info;
++        SigfmImgInfo info;
+         in >> info.keypoints >> info.descriptors;
+         return info;
+     }
+@@ -78,10 +78,10 @@ struct angle {
+ };
+ } // namespace
+ 
+-SfmImgInfo* sfm_copy_info(SfmImgInfo* info) { return new SfmImgInfo{*info}; }
++SigfmImgInfo* sigfm_copy_info(SigfmImgInfo* info) { return new SigfmImgInfo{*info}; }
+ 
+-int sfm_keypoints_count(SfmImgInfo* info) { return info->keypoints.size(); }
+-unsigned char* sfm_serialize_binary(SfmImgInfo* info, int* outlen)
++int sigfm_keypoints_count(SigfmImgInfo* info) { return info->keypoints.size(); }
++unsigned char* sigfm_serialize_binary(SigfmImgInfo* info, int* outlen)
+ {
+     bin::stream s;
+     s << *info;
+@@ -89,11 +89,11 @@ unsigned char* sfm_serialize_binary(SfmImgInfo* info, int* outlen)
+     return s.copy_buffer();
+ }
+ 
+-SfmImgInfo* sfm_deserialize_binary(const unsigned char* bytes, int len)
++SigfmImgInfo* sigfm_deserialize_binary(const unsigned char* bytes, int len)
+ {
+     try {
+         bin::stream s{bytes, bytes + len};
+-        auto info = std::make_unique<SfmImgInfo>();
++        auto info = std::make_unique<SigfmImgInfo>();
+         s >> *info;
+         return info.release();
+     }
+@@ -102,7 +102,7 @@ SfmImgInfo* sfm_deserialize_binary(const unsigned char* bytes, int len)
+     }
+ }
+ 
+-SfmImgInfo* sfm_extract(const SfmPix* pix, int width, int height)
++SigfmImgInfo* sigfm_extract(const SigfmPix* pix, int width, int height)
+ {
+     const cv::Mat img(height, width, CV_8UC1, (void*)pix);
+ 
+@@ -110,11 +110,11 @@ SfmImgInfo* sfm_extract(const SfmPix* pix, int width, int height)
+     cv::Mat descs;
+     cv::SIFT::create()->detectAndCompute(img, cv::Mat(), pts, descs);
+ 
+-    auto* info = new SfmImgInfo{pts, descs};
++    auto* info = new SigfmImgInfo{pts, descs};
+     return info;
+ }
+ 
+-int sfm_match_score(SfmImgInfo* frame, SfmImgInfo* enrolled)
++int sigfm_match_score(SigfmImgInfo* frame, SigfmImgInfo* enrolled)
+ {
+     try {
+         std::vector<std::vector<cv::DMatch>> points;
+@@ -198,4 +198,4 @@ int sfm_match_score(SfmImgInfo* frame, SfmImgInfo* enrolled)
+     }
+ }
+ 
+-void sfm_free_info(SfmImgInfo* info) { delete info; }
++void sigfm_free_info(SigfmImgInfo* info) { delete info; }
+diff --git a/libfprint/sigfm/sigfm.h b/libfprint/sigfm/sigfm.h
+index 39b99b45..e223ded3 100644
+--- a/libfprint/sigfm/sigfm.h
++++ b/libfprint/sigfm/sigfm.h
+@@ -12,30 +12,30 @@
+ #ifdef __cplusplus
+ extern "C" {
+ #endif
+-typedef unsigned char SfmPix;
++typedef unsigned char SigfmPix;
+ /**
+  * @brief Contains information used by the sigfm algorithm for matching
+- * @details Get one from sfm_extract() and make sure to clean it up with sfm_free_info()
+- * @struct SfmImgInfo
++ * @details Get one from sigfm_extract() and make sure to clean it up with sigfm_free_info()
++ * @struct SigfmImgInfo
+  */
+-typedef struct SfmImgInfo SfmImgInfo;
++typedef struct SigfmImgInfo SigfmImgInfo;
+ 
+ /**
+- * @brief Extracts information from an image for later use sfm_match_score
++ * @brief Extracts information from an image for later use sigfm_match_score
+  *
+  * @param pix Pixels of the image must be width * height in length
+  * @param width Width of the image
+  * @param height Height of the image
+- * @return SfmImgInfo* Info that can be used with the API
++ * @return SigfmImgInfo* Info that can be used with the API
+  */
+-SfmImgInfo* sfm_extract(const SfmPix* pix, int width, int height);
++SigfmImgInfo* sigfm_extract(const SigfmPix* pix, int width, int height);
+ 
+ /**
+- * @brief Destroy an SfmImgInfo
++ * @brief Destroy an SigfmImgInfo
+  * @warning Call this instead of free() or you will get UB!
+- * @param info SfmImgInfo to destroy
++ * @param info SigfmImgInfo to destroy
+  */
+-void sfm_free_info(SfmImgInfo* info);
++void sigfm_free_info(SigfmImgInfo* info);
+ 
+ /**
+  * @brief Score how closely a frame matches another
+@@ -44,24 +44,24 @@ void sfm_free_info(SfmImgInfo* info);
+  * @param enrolled Canonical print to verify against
+  * @return int Score of how closely they match, values <0 indicate error, 0 means always reject
+  */
+-int sfm_match_score(SfmImgInfo* frame, SfmImgInfo* enrolled);
++int sigfm_match_score(SigfmImgInfo* frame, SigfmImgInfo* enrolled);
+ 
+ /**
+  * @brief Serialize an image info for storage
+  *
+- * @param info SfmImgInfo to store
++ * @param info SigfmImgInfo to store
+  * @param outlen output: Length of the returned byte array
+  * @return unsigned* char byte array for storage, should be free'd by the callee
+  */
+-unsigned char* sfm_serialize_binary(SfmImgInfo* info, int* outlen);
++unsigned char* sigfm_serialize_binary(SigfmImgInfo* info, int* outlen);
+ /**
+- * @brief Deserialize an SfmImgInfo from storage
++ * @brief Deserialize an SigfmImgInfo from storage
+  *
+  * @param bytes Byte array to deserialize from
+  * @param len Length of the byte array
+- * @return SfmImgInfo* Deserialized info, or NULL if deserialization failed
++ * @return SigfmImgInfo* Deserialized info, or NULL if deserialization failed
+  */
+-SfmImgInfo* sfm_deserialize_binary(const unsigned char* bytes, int len);
++SigfmImgInfo* sigfm_deserialize_binary(const unsigned char* bytes, int len);
+ 
+ /**
+  * @brief Keypoints for an image. Low keypoints generally means the image is
+@@ -71,15 +71,15 @@ SfmImgInfo* sfm_deserialize_binary(const unsigned char* bytes, int len);
+  * @return int
+  */
+ 
+-int sfm_keypoints_count(SfmImgInfo* info);
++int sigfm_keypoints_count(SigfmImgInfo* info);
+ 
+ /**
+- * @brief Copy an SfmImgInfo
++ * @brief Copy an SigfmImgInfo
+  *
+  * @param info Source of copy
+- * @return SfmImgInfo* Newly allocated and copied version of info
++ * @return SigfmImgInfo* Newly allocated and copied version of info
+  */
+-SfmImgInfo* sfm_copy_info(SfmImgInfo* info);
++SigfmImgInfo* sigfm_copy_info(SigfmImgInfo* info);
+ 
+ #ifdef __cplusplus
+ }
+diff --git a/libfprint/sigfm/tests.cpp b/libfprint/sigfm/tests.cpp
+index 589bbba8..85e62cf6 100644
+--- a/libfprint/sigfm/tests.cpp
++++ b/libfprint/sigfm/tests.cpp
+@@ -117,12 +117,12 @@ TEST_SUITE("binary")
+         s >> ptout;
+         CHECK(to_str(pt) == to_str(ptout));
+     }
+-    TEST_CASE("sfm img info can be stored and restored")
++    TEST_CASE("sigfm img info can be stored and restored")
+     {
+         constexpr auto img_w = 256;
+         constexpr auto img_h = 256;
+         constexpr auto img = embedded::capture_aes3500;
+-        SfmImgInfo* info = sfm_extract(img, img_w, img_h);
++        SigfmImgInfo* info = sigfm_extract(img, img_w, img_h);
+         REQUIRE(info != nullptr);
+         const auto inf1desc = info->descriptors;
+         cv::Mat descout;
+@@ -132,11 +132,11 @@ TEST_SUITE("binary")
+         CHECK(comp_mats(inf1desc, descout));
+ 
+         int slen;
+-        const auto bin_data = sfm_serialize_binary(info, &slen);
++        const auto bin_data = sigfm_serialize_binary(info, &slen);
+         int slen2;
+-        SfmImgInfo* info2 = sfm_deserialize_binary(bin_data, slen);
++        SigfmImgInfo* info2 = sigfm_deserialize_binary(bin_data, slen);
+         REQUIRE(info2);
+-        const auto bin_data2 = sfm_serialize_binary(info2, &slen2);
++        const auto bin_data2 = sigfm_serialize_binary(info2, &slen2);
+         CHECK(slen == slen2);
+         CHECK(std::equal(bin_data, bin_data + slen, bin_data2,
+                          bin_data2 + slen2));
+@@ -145,7 +145,7 @@ TEST_SUITE("binary")
+         REQUIRE(std::equal(
+             info->descriptors.datastart, info->descriptors.dataend,
+             info2->descriptors.datastart, info2->descriptors.dataend));
+-        sfm_free_info(info);
+-        sfm_free_info(info2);
++        sigfm_free_info(info);
++        sigfm_free_info(info2);
+     }
+ }

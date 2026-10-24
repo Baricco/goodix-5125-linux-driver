@@ -1,0 +1,45 @@
+From d50381b7f28f46f4ddd46522b57cb9a530dd98b5 Mon Sep 17 00:00:00 2001
+From: Natasha England-Elbro <natasha@natashaee.me>
+Date: Fri, 4 Nov 2022 22:58:21 +0000
+Subject: [PATCH 06/21] feat: identitfy using sfm
+
+---
+ libfprint/fpi-image-device.c | 10 +++++++++-
+ libfprint/fpi-print.c        |  3 ++-
+ 2 files changed, 11 insertions(+), 2 deletions(-)
+
+diff --git a/libfprint/fpi-image-device.c b/libfprint/fpi-image-device.c
+index 30f772e2..251e7290 100644
+--- a/libfprint/fpi-image-device.c
++++ b/libfprint/fpi-image-device.c
+@@ -334,7 +334,15 @@ fpi_image_device_minutiae_detected (GObject *source_object, GAsyncResult *res, g
+         {
+           FpPrint *template = g_ptr_array_index (templates, i);
+ 
+-          if (fpi_print_bz3_match (template, print, priv->bz3_threshold, &error) == FPI_MATCH_SUCCESS)
++          int match_result = FPI_MATCH_ERROR;
++          if (priv->algorithm == FPI_PRINT_NBIS)
++            match_result = fpi_print_bz3_match (template, print,
++                                                priv->bz3_threshold, &error);
++          else if (priv->algorithm == FPI_PRINT_SIGFM)
++            match_result = fpi_print_sfm_match (template, print,
++                                                priv->bz3_threshold, &error);
++
++          if (match_result == FPI_MATCH_SUCCESS)
+             {
+               result = template;
+               break;
+diff --git a/libfprint/fpi-print.c b/libfprint/fpi-print.c
+index 812c9f5d..9b97ee21 100644
+--- a/libfprint/fpi-print.c
++++ b/libfprint/fpi-print.c
+@@ -294,7 +294,8 @@ fpi_print_sfm_match (FpPrint * template, FpPrint * print,
+     {
+       *error = fpi_device_error_new_msg (
+         FP_DEVICE_ERROR_NOT_SUPPORTED,
+-        "Cannot call sfm match with non-sfm print data");
++        "Cannot call sfm match with non-sfm print data, type was %d",
++        template->type);
+       return FPI_MATCH_ERROR;
+     }
+   SfmImgInfo * against = g_ptr_array_index (print->prints, 0);

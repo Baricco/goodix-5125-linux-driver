@@ -1,0 +1,21 @@
+From b1de2d6fc155667ed80d6692f8804a81919ed549 Mon Sep 17 00:00:00 2001
+From: Natasha England-Elbro <natasha@natashaee.me>
+Date: Fri, 16 Dec 2022 15:10:38 +0000
+Subject: [PATCH 14/21] chore: remove unused var
+
+---
+ libfprint/fp-image-device.c | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/libfprint/fp-image-device.c b/libfprint/fp-image-device.c
+index 4469161d..a0d41827 100644
+--- a/libfprint/fp-image-device.c
++++ b/libfprint/fp-image-device.c
+@@ -101,7 +101,6 @@ fp_image_device_start_capture_action (FpDevice *device)
+   FpImageDevice *self = FP_IMAGE_DEVICE (device);
+   FpImageDevicePrivate *priv = fp_image_device_get_instance_private (self);
+   FpiDeviceAction action;
+-  FpiPrintType print_type;
+ 
+   /* There is just one action that we cannot support out
+    * of the box, which is a capture without first waiting

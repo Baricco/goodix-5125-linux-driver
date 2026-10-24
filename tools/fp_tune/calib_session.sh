@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
 # Sessione di calibrazione del matcher (una tantum, ~10 minuti di tocchi).
 #
-#  1. installa la libfprint ricompilata (backup automatico della precedente)
-#  2. attiva dump grezzi 16-bit + log di debug in fprintd
-#  3. ri-registra il dito (la pipeline immagine e' cambiata: il vecchio
-#     template non e' piu' confrontabile)
-#  4. N verify col dito registrato (genuini) e N con altre dita (impostori):
+# Presuppone libfprint-goodixgf installata (packaging/). Durante la sessione
+# attiva in fprintd i dump grezzi 16-bit e i log di debug; a fine sessione li
+# spegne da sola e cancella i dump dal sistema (restano solo in ~/fp-dataset2).
+#
+#  1. ri-registra il dito (se la pipeline immagine cambia, il vecchio template
+#     non e' piu' confrontabile)
+#  2. N verify col dito registrato (genuini) e N con altre dita (impostori):
 #     misura FRR/FAR dal vivo e salva TUTTI i frame grezzi per il tuning offline
+#     (tools/fp_tune/analyze_session.py)
 #
 # Uso:  tools/fp_tune/calib_session.sh [n_genuini] [n_impostori]
 # Output: ~/fp-dataset2/<fase>/ (dump imgproc-*), ~/fp-dataset2/session.log
 set -u
-FORK=/home/baricco/goodix-linux-27c6-5125/libfprint
-NEWLIB="$FORK/build/libfprint/libfprint-2.so.2.0.0"
 DUMP=/var/lib/fprint/goodix
+DEBUG_CONF=/etc/systemd/system/fprintd.service.d/debug.conf
 OUT="$HOME/fp-dataset2"
 FINGER=right-index-finger
 NG="${1:-25}"
@@ -28,13 +30,19 @@ say "Autenticazione sudo (una volta sola; resta attiva per tutta la sessione)"
 sudo -v || exit 1
 ( while true; do sudo -n -v 2>/dev/null; sleep 50; done ) &
 KEEP=$!
-trap 'kill $KEEP 2>/dev/null' EXIT
 
-say "Installo la nuova libfprint (backup in /usr/lib/libfprint-2.so.2.0.0.bak-calib)"
-[ -f "$NEWLIB" ] || { echo "manca $NEWLIB (ninja -C $FORK/build)"; exit 1; }
-sudo cp -n /usr/lib/libfprint-2.so.2.0.0 /usr/lib/libfprint-2.so.2.0.0.bak-calib
-sudo install -m755 "$NEWLIB" /usr/lib/libfprint-2.so.2.0.0
-sudo tee /etc/systemd/system/fprintd.service.d/debug.conf >/dev/null <<'EOF'
+cleanup() {
+  kill $KEEP 2>/dev/null
+  echo ">>> Spengo dump e debug di fprintd, cancello i dump di sistema"
+  sudo rm -f "$DEBUG_CONF"
+  sudo bash -c "rm -f $DUMP/imgproc-*"
+  sudo systemctl daemon-reload
+  sudo systemctl restart fprintd
+}
+trap cleanup EXIT
+
+say "Attivo dump grezzi e log di debug in fprintd (solo per questa sessione)"
+sudo install -Dm644 /dev/stdin "$DEBUG_CONF" <<'EOF'
 [Service]
 Environment=GOODIX_DUMP_IMGPROC=1
 Environment=G_MESSAGES_DEBUG=all

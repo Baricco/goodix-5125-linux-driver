@@ -1,0 +1,597 @@
+From f975f9eb0039224269cd67bca34edd74fd71fbed Mon Sep 17 00:00:00 2001
+From: Natasha England-Elbro <natasha@natashaee.me>
+Date: Fri, 16 Dec 2022 15:09:33 +0000
+Subject: [PATCH 13/21] chore: bz3_threshold -> score_threshold
+
+---
+ libfprint/drivers/aes1610.c         |  2 +-
+ libfprint/drivers/aes1660.c         |  2 +-
+ libfprint/drivers/aes2660.c         |  2 +-
+ libfprint/drivers/aes3k.c           |  2 +-
+ libfprint/drivers/egis0570.c        |  2 +-
+ libfprint/drivers/egis0570.h        |  4 ++--
+ libfprint/drivers/elan.c            |  2 +-
+ libfprint/drivers/elanspi.c         |  2 +-
+ libfprint/drivers/nb1010.c          |  2 +-
+ libfprint/drivers/secugen.c         |  2 +-
+ libfprint/drivers/upeksonly.c       |  2 +-
+ libfprint/drivers/upektc.c          |  2 +-
+ libfprint/drivers/upektc_img.c      |  2 +-
+ libfprint/drivers/vfs0050.c         |  2 +-
+ libfprint/drivers/vfs101.c          |  2 +-
+ libfprint/drivers/vfs301.c          |  2 +-
+ libfprint/drivers/vfs5011.c         |  2 +-
+ libfprint/drivers/vfs7552.c         |  2 +-
+ libfprint/fp-image-device-private.h |  2 +-
+ libfprint/fp-image-device.c         |  6 +++---
+ libfprint/fp-image.c                | 10 +++++-----
+ libfprint/fpi-image-device.c        | 20 ++++++++++----------
+ libfprint/fpi-image-device.h        |  8 ++++----
+ libfprint/fpi-print.c               | 16 ++++++++--------
+ libfprint/fpi-print.h               |  4 ++--
+ libfprint/sigfm/sigfm.h             | 21 +++++++++++++--------
+ 26 files changed, 65 insertions(+), 60 deletions(-)
+
+diff --git a/libfprint/drivers/aes1610.c b/libfprint/drivers/aes1610.c
+index 91f25867..bae50b17 100644
+--- a/libfprint/drivers/aes1610.c
++++ b/libfprint/drivers/aes1610.c
+@@ -850,7 +850,7 @@ fpi_device_aes1610_class_init (FpiDeviceAes1610Class *klass)
+   img_class->activate = dev_activate;
+   img_class->deactivate = dev_deactivate;
+ 
+-  img_class->bz3_threshold = 20;
++  img_class->score_threshold = 20;
+ 
+   img_class->img_width = IMAGE_WIDTH;
+   img_class->img_height = -1;
+diff --git a/libfprint/drivers/aes1660.c b/libfprint/drivers/aes1660.c
+index 93da6967..bbd9e25a 100644
+--- a/libfprint/drivers/aes1660.c
++++ b/libfprint/drivers/aes1660.c
+@@ -80,7 +80,7 @@ fpi_device_aes1660_class_init (FpiDeviceAes1660Class *klass)
+   dev_class->id_table = id_table;
+   dev_class->scan_type = FP_SCAN_TYPE_SWIPE;
+ 
+-  img_class->bz3_threshold = 20;
++  img_class->score_threshold = 20;
+ 
+   img_class->img_width = FRAME_WIDTH + FRAME_WIDTH / 2;
+   img_class->img_height = -1;
+diff --git a/libfprint/drivers/aes2660.c b/libfprint/drivers/aes2660.c
+index fb5aa7e1..6c2c27dd 100644
+--- a/libfprint/drivers/aes2660.c
++++ b/libfprint/drivers/aes2660.c
+@@ -82,7 +82,7 @@ fpi_device_aes2660_class_init (FpiDeviceAes2660Class *klass)
+   dev_class->id_table = id_table;
+   dev_class->scan_type = FP_SCAN_TYPE_SWIPE;
+ 
+-  img_class->bz3_threshold = 20;
++  img_class->score_threshold = 20;
+ 
+   img_class->img_width = FRAME_WIDTH + FRAME_WIDTH / 2;
+   img_class->img_height = -1;
+diff --git a/libfprint/drivers/aes3k.c b/libfprint/drivers/aes3k.c
+index bab6815b..3540ae62 100644
+--- a/libfprint/drivers/aes3k.c
++++ b/libfprint/drivers/aes3k.c
+@@ -266,7 +266,7 @@ fpi_device_aes3k_class_init (FpiDeviceAes3kClass *klass)
+   img_class->deactivate = aes3k_dev_deactivate;
+ 
+   /* Extremely low due to low image quality. */
+-  img_class->bz3_threshold = 9;
++  img_class->score_threshold = 9;
+ 
+   /* Everything else is set by the subclasses. */
+ }
+diff --git a/libfprint/drivers/egis0570.c b/libfprint/drivers/egis0570.c
+index 0ff607da..9ec34a47 100644
+--- a/libfprint/drivers/egis0570.c
++++ b/libfprint/drivers/egis0570.c
+@@ -440,5 +440,5 @@ fpi_device_egis0570_class_init (FpDeviceEgis0570Class *klass)
+   img_class->img_width = EGIS0570_IMGWIDTH;
+   img_class->img_height = -1;
+ 
+-  img_class->bz3_threshold = EGIS0570_BZ3_THRESHOLD; /* security issue */
++  img_class->score_threshold = EGIS0570_SCORE_THRESHOLD; /* security issue */
+ }
+diff --git a/libfprint/drivers/egis0570.h b/libfprint/drivers/egis0570.h
+index 2c8f0457..57d609da 100644
+--- a/libfprint/drivers/egis0570.h
++++ b/libfprint/drivers/egis0570.h
+@@ -161,13 +161,13 @@ static unsigned char repeat_pkts[][EGIS0570_PKTSIZE] =
+ };
+ 
+ /*
+- * This sensor is small so I decided to reduce bz3_threshold from
++ * This sensor is small so I decided to reduce score_threshold from
+  * 40 to 10 to have more success to fail ratio
+  * Bozorth3 Algorithm seems not fine at the end
+  * foreget about security :))
+  */
+ 
+-#define EGIS0570_BZ3_THRESHOLD 25 /* and even less What a joke */
++#define EGIS0570_SCORE_THRESHOLD 25 /* and even less What a joke */
+ 
+ #define EGIS0570_MIN_MEAN 20
+ #define EGIS0570_MARGIN 3
+diff --git a/libfprint/drivers/elan.c b/libfprint/drivers/elan.c
+index f9cc52f7..0c17de5f 100644
+--- a/libfprint/drivers/elan.c
++++ b/libfprint/drivers/elan.c
+@@ -1023,5 +1023,5 @@ fpi_device_elan_class_init (FpiDeviceElanClass *klass)
+   img_class->deactivate = dev_deactivate;
+   img_class->change_state = dev_change_state;
+ 
+-  img_class->bz3_threshold = 24;
++  img_class->score_threshold = 24;
+ }
+diff --git a/libfprint/drivers/elanspi.c b/libfprint/drivers/elanspi.c
+index c2e3cbc2..dd59b011 100644
+--- a/libfprint/drivers/elanspi.c
++++ b/libfprint/drivers/elanspi.c
+@@ -1702,7 +1702,7 @@ fpi_device_elanspi_class_init (FpiDeviceElanSpiClass *klass)
+   dev_class->scan_type = FP_SCAN_TYPE_SWIPE;
+   dev_class->nr_enroll_stages = 7;       /* these sensors are very hit or miss, may as well record a few extras */
+ 
+-  img_class->bz3_threshold = 24;
++  img_class->score_threshold = 24;
+   img_class->img_open = elanspi_open;
+   img_class->activate = elanspi_activate;
+   img_class->deactivate = elanspi_deactivate;
+diff --git a/libfprint/drivers/nb1010.c b/libfprint/drivers/nb1010.c
+index 6b7755fa..5ae44c8f 100644
+--- a/libfprint/drivers/nb1010.c
++++ b/libfprint/drivers/nb1010.c
+@@ -436,7 +436,7 @@ fpi_device_nb1010_class_init (FpiDeviceNb1010Class *klass)
+   img_class->img_height = FRAME_HEIGHT;
+   img_class->img_width = FRAME_WIDTH;
+ 
+-  img_class->bz3_threshold = 24;
++  img_class->score_threshold = 24;
+ 
+   img_class->img_open = nb1010_dev_init;
+   img_class->img_close = nb1010_dev_deinit;
+diff --git a/libfprint/drivers/secugen.c b/libfprint/drivers/secugen.c
+index 37a3c17f..dd4abd64 100644
+--- a/libfprint/drivers/secugen.c
++++ b/libfprint/drivers/secugen.c
+@@ -2338,7 +2338,7 @@ fpi_device_secugen_class_init (FpiDeviceSecugenClass *klass)
+   img_class->deactivate = dev_deactivate;
+   img_class->change_state = dev_change_state;
+ 
+-  img_class->bz3_threshold = 24;
++  img_class->score_threshold = 24;
+ 
+   img_class->img_width = SECUGEN_IMG_WIDTH;
+   img_class->img_height = SECUGEN_IMG_HEIGHT;
+diff --git a/libfprint/drivers/upeksonly.c b/libfprint/drivers/upeksonly.c
+index e7ea3ce2..f4f0ca6f 100644
+--- a/libfprint/drivers/upeksonly.c
++++ b/libfprint/drivers/upeksonly.c
+@@ -1540,7 +1540,7 @@ dev_init (FpImageDevice *dev)
+       self->assembling_ctx.line_width = IMG_WIDTH_1001;
+ 
+       /* The sensor resolution is too low for the normal threshold. */
+-      fpi_image_device_set_bz3_threshold (dev, 25);
++      fpi_image_device_set_score_threshold (dev, 25);
+       break;
+ 
+     case UPEKSONLY_2016:
+diff --git a/libfprint/drivers/upektc.c b/libfprint/drivers/upektc.c
+index 3f7b6a68..46b8802a 100644
+--- a/libfprint/drivers/upektc.c
++++ b/libfprint/drivers/upektc.c
+@@ -457,7 +457,7 @@ fpi_device_upektc_class_init (FpiDeviceUpektcClass *klass)
+   img_class->activate = dev_activate;
+   img_class->deactivate = dev_deactivate;
+ 
+-  img_class->bz3_threshold = 30;
++  img_class->score_threshold = 30;
+ 
+   img_class->img_width = IMAGE_WIDTH;
+   img_class->img_height = IMAGE_HEIGHT;
+diff --git a/libfprint/drivers/upektc_img.c b/libfprint/drivers/upektc_img.c
+index c8ca21f6..8becffb1 100644
+--- a/libfprint/drivers/upektc_img.c
++++ b/libfprint/drivers/upektc_img.c
+@@ -797,7 +797,7 @@ fpi_device_upektc_img_class_init (FpiDeviceUpektcImgClass *klass)
+   img_class->activate = dev_activate;
+   img_class->deactivate = dev_deactivate;
+ 
+-  img_class->bz3_threshold = 20;
++  img_class->score_threshold = 20;
+ 
+   img_class->img_width = -1;
+   img_class->img_height = -1;
+diff --git a/libfprint/drivers/vfs0050.c b/libfprint/drivers/vfs0050.c
+index ca2eda9c..06db2914 100644
+--- a/libfprint/drivers/vfs0050.c
++++ b/libfprint/drivers/vfs0050.c
+@@ -766,7 +766,7 @@ fpi_device_vfs0050_class_init (FpDeviceVfs0050Class *klass)
+   img_class->activate = dev_activate;
+   img_class->deactivate = dev_deactivate;
+ 
+-  img_class->bz3_threshold = 24;
++  img_class->score_threshold = 24;
+ 
+   img_class->img_width = VFS_IMAGE_WIDTH;
+   img_class->img_height = -1;
+diff --git a/libfprint/drivers/vfs101.c b/libfprint/drivers/vfs101.c
+index ca77901a..56cfe000 100644
+--- a/libfprint/drivers/vfs101.c
++++ b/libfprint/drivers/vfs101.c
+@@ -1366,7 +1366,7 @@ fpi_device_vfs101_class_init (FpDeviceVfs101Class *klass)
+   img_class->activate = dev_activate;
+   img_class->deactivate = dev_deactivate;
+ 
+-  img_class->bz3_threshold = 24;
++  img_class->score_threshold = 24;
+ 
+   img_class->img_width = VFS_IMG_WIDTH;
+   img_class->img_height = -1;
+diff --git a/libfprint/drivers/vfs301.c b/libfprint/drivers/vfs301.c
+index 9b162ee9..8d7adfec 100644
+--- a/libfprint/drivers/vfs301.c
++++ b/libfprint/drivers/vfs301.c
+@@ -274,7 +274,7 @@ fpi_device_vfs301_class_init (FpDeviceVfs301Class *klass)
+   img_class->deactivate = dev_deactivate;
+   img_class->change_state = dev_change_state;
+ 
+-  img_class->bz3_threshold = 24;
++  img_class->score_threshold = 24;
+ 
+   img_class->img_width = VFS301_FP_WIDTH;
+   img_class->img_height = -1;
+diff --git a/libfprint/drivers/vfs5011.c b/libfprint/drivers/vfs5011.c
+index b9e0587b..6377b886 100644
+--- a/libfprint/drivers/vfs5011.c
++++ b/libfprint/drivers/vfs5011.c
+@@ -894,7 +894,7 @@ fpi_device_vfs5011_class_init (FpDeviceVfs5011Class *klass)
+   img_class->activate = dev_activate;
+   img_class->deactivate = dev_deactivate;
+ 
+-  img_class->bz3_threshold = 20;
++  img_class->score_threshold = 20;
+ 
+   img_class->img_width = VFS5011_IMAGE_WIDTH;
+   img_class->img_height = -1;
+diff --git a/libfprint/drivers/vfs7552.c b/libfprint/drivers/vfs7552.c
+index 53b4d3f3..0fb8d11b 100644
+--- a/libfprint/drivers/vfs7552.c
++++ b/libfprint/drivers/vfs7552.c
+@@ -1065,7 +1065,7 @@ fpi_device_vfs7552_class_init (FpDeviceVfs7552Class *klass)
+   img_class->activate = dev_activate;
+   img_class->img_open = dev_open;
+ 
+-  img_class->bz3_threshold = 20;
++  img_class->score_threshold = 20;
+ 
+   img_class->img_width = VFS7552_IMAGE_WIDTH;
+   img_class->img_height = VFS7552_IMAGE_HEIGHT;
+diff --git a/libfprint/fp-image-device-private.h b/libfprint/fp-image-device-private.h
+index a9a93429..0b2e205c 100644
+--- a/libfprint/fp-image-device-private.h
++++ b/libfprint/fp-image-device-private.h
+@@ -36,7 +36,7 @@ typedef struct
+   GError             *action_error;
+   FpImage            *capture_image;
+ 
+-  gint                bz3_threshold;
++  gint                score_threshold;
+   FpiPrintType        algorithm;
+ } FpImageDevicePrivate;
+ 
+diff --git a/libfprint/fp-image-device.c b/libfprint/fp-image-device.c
+index 812b7481..4469161d 100644
+--- a/libfprint/fp-image-device.c
++++ b/libfprint/fp-image-device.c
+@@ -195,9 +195,9 @@ fp_image_device_constructed (GObject *obj)
+   FpImageDeviceClass *cls = FP_IMAGE_DEVICE_GET_CLASS (self);
+ 
+   /* Set default threshold. */
+-  priv->bz3_threshold = BOZORTH3_DEFAULT_THRESHOLD;
+-  if (cls->bz3_threshold > 0)
+-    priv->bz3_threshold = cls->bz3_threshold;
++  priv->score_threshold = BOZORTH3_DEFAULT_THRESHOLD;
++  if (cls->score_threshold > 0)
++    priv->score_threshold = cls->score_threshold;
+   priv->algorithm = FPI_PRINT_NBIS;
+   if (cls->algorithm > 0)
+     priv->algorithm = (FpiPrintType) cls->algorithm;
+diff --git a/libfprint/fp-image.c b/libfprint/fp-image.c
+index b72dc647..da20a326 100644
+--- a/libfprint/fp-image.c
++++ b/libfprint/fp-image.c
+@@ -170,7 +170,7 @@ typedef struct
+ 
+ typedef struct
+ {
+-  SigfmImgInfo        * sigfm_info;
++  SigfmImgInfo      * sigfm_info;
+   guchar            * image;
+   gint                width;
+   gint                height;
+@@ -201,7 +201,7 @@ fp_image_sigfm_extract_free (ExtractSigfmData * data)
+ 
+ static void
+ fp_image_sigfm_extract_cb (GObject * source_object, GAsyncResult * res,
+-                         gpointer user_data)
++                           gpointer user_data)
+ {
+   GTask * task = G_TASK (res);
+   FpImage * image;
+@@ -310,8 +310,8 @@ invert_colors (guint8 *data, gint width, gint height)
+ 
+ static void
+ fp_image_sigfm_extract_thread_func (GTask * task, void * src_obj,
+-                                  void * task_data,
+-                                  GCancellable * cancellable)
++                                    void * task_data,
++                                    GCancellable * cancellable)
+ {
+   ExtractSigfmData * data = task_data;
+   GTimer * timer = g_timer_new ();
+@@ -536,7 +536,7 @@ fp_image_get_sigfm_info (FpImage * self)
+  */
+ void
+ fp_image_extract_sigfm_info (FpImage * self, GCancellable * cancellable,
+-                           GAsyncReadyCallback callback, gpointer user_data)
++                             GAsyncReadyCallback callback, gpointer user_data)
+ {
+   GTask * task;
+   ExtractSigfmData * data = g_new0 (ExtractSigfmData, 1);
+diff --git a/libfprint/fpi-image-device.c b/libfprint/fpi-image-device.c
+index 963f1a3d..7d27facd 100644
+--- a/libfprint/fpi-image-device.c
++++ b/libfprint/fpi-image-device.c
+@@ -337,10 +337,10 @@ fpi_image_device_minutiae_detected (GObject *source_object, GAsyncResult *res, g
+           int match_result = FPI_MATCH_ERROR;
+           if (priv->algorithm == FPI_PRINT_NBIS)
+             match_result = fpi_print_bz3_match (template, print,
+-                                                priv->bz3_threshold, &error);
++                                                priv->score_threshold, &error);
+           else if (priv->algorithm == FPI_PRINT_SIGFM)
+             match_result = fpi_print_sigfm_match (template, print,
+-                                                priv->bz3_threshold, &error);
++                                                  priv->score_threshold, &error);
+ 
+           if (match_result == FPI_MATCH_SUCCESS)
+             {
+@@ -370,9 +370,9 @@ fpi_image_device_minutiae_detected (GObject *source_object, GAsyncResult *res, g
+ /* Private API */
+ 
+ /**
+- * fpi_image_device_set_bz3_threshold:
++ * fpi_image_device_set_score_threshold:
+  * @self: a #FpImageDevice imaging fingerprint device
+- * @bz3_threshold: BZ3 threshold to use
++ * @score_threshold: BZ3 threshold to use
+  *
+  * Dynamically adjust the bz3 threshold. This is only needed for drivers
+  * that support devices with different properties. It should generally be
+@@ -380,15 +380,15 @@ fpi_image_device_minutiae_detected (GObject *source_object, GAsyncResult *res, g
+  * callback.
+  */
+ void
+-fpi_image_device_set_bz3_threshold (FpImageDevice *self,
+-                                    gint           bz3_threshold)
++fpi_image_device_set_score_threshold (FpImageDevice *self,
++                                      gint           score_threshold)
+ {
+   FpImageDevicePrivate *priv = fp_image_device_get_instance_private (self);
+ 
+   g_return_if_fail (FP_IS_IMAGE_DEVICE (self));
+-  g_return_if_fail (bz3_threshold > 0);
++  g_return_if_fail (score_threshold > 0);
+ 
+-  priv->bz3_threshold = bz3_threshold;
++  priv->score_threshold = score_threshold;
+ }
+ 
+ /**
+@@ -503,8 +503,8 @@ fpi_image_device_image_captured (FpImageDevice *self, FpImage *image)
+   else
+     {
+       fp_image_extract_sigfm_info (image,
+-                                 fpi_device_get_cancellable (FP_DEVICE (self)),
+-                                 fpi_image_device_minutiae_detected, self);
++                                   fpi_device_get_cancellable (FP_DEVICE (self)),
++                                   fpi_image_device_minutiae_detected, self);
+     }
+ 
+   /* XXX: This is wrong if we add support for raw capture mode. */
+diff --git a/libfprint/fpi-image-device.h b/libfprint/fpi-image-device.h
+index 2cb615a1..d3403230 100644
+--- a/libfprint/fpi-image-device.h
++++ b/libfprint/fpi-image-device.h
+@@ -78,7 +78,7 @@ typedef enum {
+ 
+ /**
+  * FpImageDeviceClass:
+- * @bz3_threshold: Threshold to consider bozorth3 score a match, default: 40
++ * @score_threshold: Threshold to consider bozorth3 score a match, default: 40
+  * @img_width: Width of the image, only provide if constant
+  * @img_height: Height of the image, only provide if constant
+  * @img_open: Open the device and do basic initialization
+@@ -110,7 +110,7 @@ struct _FpImageDeviceClass
+ {
+   FpDeviceClass           parent_class;
+ 
+-  gint                    bz3_threshold;
++  gint                    score_threshold;
+   gint                    img_width;
+   gint                    img_height;
+   FpiImageDeviceAlgorithm algorithm;
+@@ -123,8 +123,8 @@ struct _FpImageDeviceClass
+   void                    (*deactivate)   (FpImageDevice *dev);
+ };
+ 
+-void fpi_image_device_set_bz3_threshold (FpImageDevice *self,
+-                                         gint           bz3_threshold);
++void fpi_image_device_set_score_threshold (FpImageDevice *self,
++                                           gint           score_threshold);
+ 
+ void fpi_image_device_session_error (FpImageDevice *self,
+                                      GError        *error);
+diff --git a/libfprint/fpi-print.c b/libfprint/fpi-print.c
+index 2a896b37..4c5389c9 100644
+--- a/libfprint/fpi-print.c
++++ b/libfprint/fpi-print.c
+@@ -232,7 +232,7 @@ fpi_print_add_from_image (FpPrint *print,
+  * fpi_print_bz3_match:
+  * @print_template: A #FpPrint containing one or more prints
+  * @print: A newly scanned #FpPrint to test
+- * @bz3_threshold: The BZ3 match threshold
++ * @score_threshold: The BZ3 match threshold
+  * @error: Return location for error
+  *
+  * Match the newly scanned @print (containing exactly one print) against the
+@@ -246,7 +246,7 @@ fpi_print_add_from_image (FpPrint *print,
+ FpiMatchResult
+ fpi_print_bz3_match (FpPrint *print_template,
+                      FpPrint *print,
+-                     gint     bz3_threshold,
++                     gint     score_threshold,
+                      GError **error)
+ {
+   struct xyt_struct *pstruct;
+@@ -277,9 +277,9 @@ fpi_print_bz3_match (FpPrint *print_template,
+       gint score;
+       gstruct = g_ptr_array_index (print_template->prints, i);
+       score = bozorth_to_gallery (probe_len, pstruct, gstruct);
+-      fp_dbg ("score %d/%d", score, bz3_threshold);
++      fp_dbg ("score %d/%d", score, score_threshold);
+ 
+-      if (score >= bz3_threshold)
++      if (score >= score_threshold)
+         return FPI_MATCH_SUCCESS;
+     }
+ 
+@@ -290,7 +290,7 @@ fpi_print_bz3_match (FpPrint *print_template,
+  * fpi_print_sigfm_match:
+  * @template: A #FpPrint containing one or more prints
+  * @print: A newly scanned #FpPrint to test
+- * @bz3_threshold: The BZ3 match threshold
++ * @score_threshold: The BZ3 match threshold
+  * @error: Return location for error
+  *
+  * Match the newly scanned @print (containing exactly one print) against the
+@@ -303,7 +303,7 @@ fpi_print_bz3_match (FpPrint *print_template,
+  */
+ FpiMatchResult
+ fpi_print_sigfm_match (FpPrint * template, FpPrint * print,
+-                     gint bz3_threshold, GError ** error)
++                       gint score_threshold, GError ** error)
+ {
+   if (template->type != FPI_PRINT_SIGFM)
+     {
+@@ -324,8 +324,8 @@ fpi_print_sigfm_match (FpPrint * template, FpPrint * print,
+                                              "error in sigfm_match_score");
+           return FPI_MATCH_ERROR;
+         }
+-      fp_dbg ("sigfm score %d/%d", score, bz3_threshold);
+-      if (score >= bz3_threshold)
++      fp_dbg ("sigfm score %d/%d", score, score_threshold);
++      if (score >= score_threshold)
+         return FPI_MATCH_SUCCESS;
+     }
+   return FPI_MATCH_FAIL;
+diff --git a/libfprint/fpi-print.h b/libfprint/fpi-print.h
+index 59112ee6..308ea5cc 100644
+--- a/libfprint/fpi-print.h
++++ b/libfprint/fpi-print.h
+@@ -49,11 +49,11 @@ gboolean fpi_print_add_from_image (FpPrint *print,
+ 
+ FpiMatchResult fpi_print_bz3_match (FpPrint *print_template,
+                                     FpPrint *print,
+-                                    gint     bz3_threshold,
++                                    gint     score_threshold,
+                                     GError **error);
+ 
+ FpiMatchResult fpi_print_sigfm_match (FpPrint * template, FpPrint * print,
+-                                    gint bz3_threshold, GError * *error);
++                                      gint score_threshold, GError * *error);
+ 
+ /* Helpers to encode metadata into user ID strings. */
+ gchar * fpi_print_generate_user_id (FpPrint * print);
+diff --git a/libfprint/sigfm/sigfm.h b/libfprint/sigfm/sigfm.h
+index e223ded3..23884a7f 100644
+--- a/libfprint/sigfm/sigfm.h
++++ b/libfprint/sigfm/sigfm.h
+@@ -12,7 +12,7 @@
+ #ifdef __cplusplus
+ extern "C" {
+ #endif
+-typedef unsigned char SigfmPix;
++typedef unsigned char       SigfmPix;
+ /**
+  * @brief Contains information used by the sigfm algorithm for matching
+  * @details Get one from sigfm_extract() and make sure to clean it up with sigfm_free_info()
+@@ -28,14 +28,16 @@ typedef struct SigfmImgInfo SigfmImgInfo;
+  * @param height Height of the image
+  * @return SigfmImgInfo* Info that can be used with the API
+  */
+-SigfmImgInfo* sigfm_extract(const SigfmPix* pix, int width, int height);
++SigfmImgInfo * sigfm_extract (const SigfmPix * pix,
++                              int              width,
++                              int              height);
+ 
+ /**
+  * @brief Destroy an SigfmImgInfo
+  * @warning Call this instead of free() or you will get UB!
+  * @param info SigfmImgInfo to destroy
+  */
+-void sigfm_free_info(SigfmImgInfo* info);
++void sigfm_free_info (SigfmImgInfo * info);
+ 
+ /**
+  * @brief Score how closely a frame matches another
+@@ -44,7 +46,8 @@ void sigfm_free_info(SigfmImgInfo* info);
+  * @param enrolled Canonical print to verify against
+  * @return int Score of how closely they match, values <0 indicate error, 0 means always reject
+  */
+-int sigfm_match_score(SigfmImgInfo* frame, SigfmImgInfo* enrolled);
++int sigfm_match_score (SigfmImgInfo * frame,
++                       SigfmImgInfo * enrolled);
+ 
+ /**
+  * @brief Serialize an image info for storage
+@@ -53,7 +56,8 @@ int sigfm_match_score(SigfmImgInfo* frame, SigfmImgInfo* enrolled);
+  * @param outlen output: Length of the returned byte array
+  * @return unsigned* char byte array for storage, should be free'd by the callee
+  */
+-unsigned char* sigfm_serialize_binary(SigfmImgInfo* info, int* outlen);
++unsigned char * sigfm_serialize_binary (SigfmImgInfo * info,
++                                        int          * outlen);
+ /**
+  * @brief Deserialize an SigfmImgInfo from storage
+  *
+@@ -61,7 +65,8 @@ unsigned char* sigfm_serialize_binary(SigfmImgInfo* info, int* outlen);
+  * @param len Length of the byte array
+  * @return SigfmImgInfo* Deserialized info, or NULL if deserialization failed
+  */
+-SigfmImgInfo* sigfm_deserialize_binary(const unsigned char* bytes, int len);
++SigfmImgInfo * sigfm_deserialize_binary (const unsigned char * bytes,
++                                         int                   len);
+ 
+ /**
+  * @brief Keypoints for an image. Low keypoints generally means the image is
+@@ -71,7 +76,7 @@ SigfmImgInfo* sigfm_deserialize_binary(const unsigned char* bytes, int len);
+  * @return int
+  */
+ 
+-int sigfm_keypoints_count(SigfmImgInfo* info);
++int sigfm_keypoints_count (SigfmImgInfo * info);
+ 
+ /**
+  * @brief Copy an SigfmImgInfo
+@@ -79,7 +84,7 @@ int sigfm_keypoints_count(SigfmImgInfo* info);
+  * @param info Source of copy
+  * @return SigfmImgInfo* Newly allocated and copied version of info
+  */
+-SigfmImgInfo* sigfm_copy_info(SigfmImgInfo* info);
++SigfmImgInfo * sigfm_copy_info (SigfmImgInfo * info);
+ 
+ #ifdef __cplusplus
+ }

@@ -1,0 +1,95 @@
+From df7c89678be546385e1684b0fcf5353d8b23e49f Mon Sep 17 00:00:00 2001
+From: Yassine Oudjana <y.oudjana@protonmail.com>
+Date: Sun, 5 Apr 2026 18:40:51 +0200
+Subject: [PATCH 18/21] fix: Satisfy generate_gir
+
+Remove unneeded fp_image_get_sigfm_info and add fp_image_extract_sigfm_info_finish.
+---
+ libfprint/fp-image.c  | 35 +++++++++++++++++++----------------
+ libfprint/fp-image.h  |  4 +++-
+ libfprint/fpi-print.c |  2 +-
+ 3 files changed, 23 insertions(+), 18 deletions(-)
+
+diff --git a/libfprint/fp-image.c b/libfprint/fp-image.c
+index da20a326..092580c0 100644
+--- a/libfprint/fp-image.c
++++ b/libfprint/fp-image.c
+@@ -509,22 +509,6 @@ fp_image_get_minutiae (FpImage *self)
+   return self->minutiae;
+ }
+ 
+-/**
+- * fp_image_get_sigfm_info:
+- * @self: A #FpImage
+- *
+- * Gets the SIGFM keypoints and descriptors for an image. This data must
+- * not be modified or freed. You need to first extract keypoints and
+- * descriptors using fp_image_extract_sigfm_info().
+- *
+- * Returns: (transfer none) (element-type SigfmImgInfo): The detected minutiae
+- */
+-SigfmImgInfo *
+-fp_image_get_sigfm_info (FpImage * self)
+-{
+-  return self->sigfm_info;
+-}
+-
+ /**
+  * fp_image_extract_sigfm_info:
+  * @self: A #FpImage
+@@ -555,6 +539,25 @@ fp_image_extract_sigfm_info (FpImage * self, GCancellable * cancellable,
+   g_task_run_in_thread (task, fp_image_sigfm_extract_thread_func);
+ }
+ 
++/**
++ * fp_image_extract_sigfm_info_finish:
++ * @self: A #FpImage
++ * @result: A #GAsyncResult
++ * @error: Return location for errors, or %NULL to ignore
++ *
++ * Finish SIGFM info extraction in an image
++ *
++ * Returns: %TRUE on success
++ */
++gboolean
++fp_image_extract_sigfm_info_finish(FpImage      *self,
++                                   GAsyncResult *result,
++                                   GError      **error)
++{
++  /* Nothing to do */
++  return TRUE;
++}
++
+ /**
+  * fp_image_detect_minutiae:
+  * @self: A #FpImage
+diff --git a/libfprint/fp-image.h b/libfprint/fp-image.h
+index 738b59cb..cb78d864 100644
+--- a/libfprint/fp-image.h
++++ b/libfprint/fp-image.h
+@@ -58,9 +58,11 @@ void           fp_minutia_get_coords (FpMinutia *min,
+                                       gint      *x,
+                                       gint      *y);
+ 
+-SigfmImgInfo *   fp_image_get_sigfm_info (FpImage * self);
+ void           fp_image_extract_sigfm_info (FpImage           * self,
+                                             GCancellable      * cancellable,
+                                             GAsyncReadyCallback callback,
+                                             gpointer            user_data);
++gboolean        fp_image_extract_sigfm_info_finish (FpImage      *self,
++                                                    GAsyncResult *result,
++                                                    GError      **error);
+ G_END_DECLS
+diff --git a/libfprint/fpi-print.c b/libfprint/fpi-print.c
+index 4c5389c9..0eb22ced 100644
+--- a/libfprint/fpi-print.c
++++ b/libfprint/fpi-print.c
+@@ -217,7 +217,7 @@ fpi_print_add_from_image (FpPrint *print,
+     }
+   else if (print->type == FPI_PRINT_SIGFM)
+     {
+-      SigfmImgInfo * info = fp_image_get_sigfm_info (image);
++      SigfmImgInfo * info = image->sigfm_info;
+       g_ptr_array_add (print->prints, info);
+     }
+ 

@@ -1,0 +1,115 @@
+From 83c14453070f061c0f4725ba7373112fc5f4f6f8 Mon Sep 17 00:00:00 2001
+From: Matthieu CHARETTE <matthieu.charette@gmail.com>
+Date: Sat, 19 Nov 2022 15:37:52 +0100
+Subject: [PATCH 11/21] doc: Update documentation of edited functions
+
+---
+ libfprint/fp-image.c  | 20 ++++++++++++++++++++
+ libfprint/fpi-print.c | 23 +++++++++++++++++++----
+ libfprint/fpi-print.h |  1 +
+ 3 files changed, 40 insertions(+), 4 deletions(-)
+
+diff --git a/libfprint/fp-image.c b/libfprint/fp-image.c
+index 84b3e54f..3bf17d2f 100644
+--- a/libfprint/fp-image.c
++++ b/libfprint/fp-image.c
+@@ -509,12 +509,31 @@ fp_image_get_minutiae (FpImage *self)
+   return self->minutiae;
+ }
+ 
++/**
++ * fp_image_get_sigfm_info:
++ * @self: A #FpImage
++ *
++ * Gets the SIGFM keypoints and descriptors for an image. This data must
++ * not be modified or freed. You need to first extract keypoints and
++ * descriptors using fp_image_extract_sigfm_info().
++ *
++ * Returns: (transfer none) (element-type SigfmImgInfo): The detected minutiae
++ */
+ SigfmImgInfo *
+ fp_image_get_sigfm_info (FpImage * self)
+ {
+   return self->sigfm_info;
+ }
+ 
++/**
++ * fp_image_extract_sigfm_info:
++ * @self: A #FpImage
++ * @cancellable: a #GCancellable, or %NULL
++ * @callback: the function to call on completion
++ * @user_data: the data to pass to @callback
++ *
++ * Extracts keypoints and descriptors found in an image.
++ */
+ void
+ fp_image_extract_sigfm_info (FpImage * self, GCancellable * cancellable,
+                            GAsyncReadyCallback callback, gpointer user_data)
+@@ -535,6 +554,7 @@ fp_image_extract_sigfm_info (FpImage * self, GCancellable * cancellable,
+                         (GDestroyNotify) fp_image_sigfm_extract_free);
+   g_task_run_in_thread (task, fp_image_sigfm_extract_thread_func);
+ }
++
+ /**
+  * fp_image_detect_minutiae:
+  * @self: A #FpImage
+diff --git a/libfprint/fpi-print.c b/libfprint/fpi-print.c
+index c0988f74..2a896b37 100644
+--- a/libfprint/fpi-print.c
++++ b/libfprint/fpi-print.c
+@@ -41,9 +41,9 @@
+  * @print: A #FpPrint
+  * @add: Print to append to @print
+  *
+- * Appends the single #FPI_PRINT_NBIS print from @add to the collection of
+- * prints in @print. Both print objects need to be of type #FPI_PRINT_NBIS
+- * for this to work.
++ * Appends the single #FPI_PRINT_NBIS or #FPI_PRINT_SIGFM print from @add
++ * to the collection of prints in @print. Both print objects need to be of
++ * the same type for this to work.
+  */
+ void
+ fpi_print_add_print (FpPrint *print, FpPrint *add)
+@@ -172,7 +172,7 @@ minutiae_to_xyt (struct fp_minutiae *minutiae,
+  * @error: Return location for error
+  *
+  * Extracts the minutiae from the given image and adds it to @print of
+- * type #FPI_PRINT_NBIS.
++ * type #FPI_PRINT_NBIS or #FPI_PRINT_SIGFM.
+  *
+  * The @image will be kept so that API users can get retrieve it e.g.
+  * for debugging purposes.
+@@ -286,6 +286,21 @@ fpi_print_bz3_match (FpPrint *print_template,
+   return FPI_MATCH_FAIL;
+ }
+ 
++/**
++ * fpi_print_sigfm_match:
++ * @template: A #FpPrint containing one or more prints
++ * @print: A newly scanned #FpPrint to test
++ * @bz3_threshold: The BZ3 match threshold
++ * @error: Return location for error
++ *
++ * Match the newly scanned @print (containing exactly one print) against the
++ * prints contained in @template which will have been stored during enrollment.
++ *
++ * Both @template and @print need to be of type #FPI_PRINT_SIGFM for this to
++ * work.
++ *
++ * Returns: Whether the prints match, @error will be set if #FPI_MATCH_ERROR is returned
++ */
+ FpiMatchResult
+ fpi_print_sigfm_match (FpPrint * template, FpPrint * print,
+                      gint bz3_threshold, GError ** error)
+diff --git a/libfprint/fpi-print.h b/libfprint/fpi-print.h
+index 5a62e934..59112ee6 100644
+--- a/libfprint/fpi-print.h
++++ b/libfprint/fpi-print.h
+@@ -11,6 +11,7 @@ G_BEGIN_DECLS
+  * @FPI_PRINT_UNDEFINED: Undefined type, this happens prior to enrollment
+  * @FPI_PRINT_RAW: A raw print where the data is directly compared
+  * @FPI_PRINT_NBIS: NBIS minutiae comparison
++ * @FPI_PRINT_SIGFM: SIGFM minutiae comparison
+  */
+ typedef enum {
+   FPI_PRINT_UNDEFINED = 0,

@@ -1,0 +1,11 @@
+#!/bin/sh
+# Avvisa se nei repo c'e' una libfprint upstream piu' recente di quella su cui
+# e' costruito libfprint-goodixgf (lanciato dall'hook di pacman, sola lettura).
+repo=$(LC_ALL=C pacman -Si libfprint 2>/dev/null | awk '/^Version/ {print $3; exit}' | cut -d- -f1)
+inst=$(LC_ALL=C pacman -Q libfprint-goodixgf 2>/dev/null | awk '{print $2}' | cut -d- -f1)
+[ -n "$repo" ] && [ -n "$inst" ] || exit 0
+if [ "$(vercmp "$repo" "$inst")" -gt 0 ]; then
+  echo ">> libfprint $repo disponibile nei repo (libfprint-goodixgf e' su $inst)."
+  echo "   Dalla cartella del progetto:  packaging/goodixgf-update"
+fi
+exit 0
