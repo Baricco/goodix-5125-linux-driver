@@ -123,7 +123,7 @@ sudo cp /etc/pam.d/sudo.bak /etc/pam.d/sudo
 # togli a mano le righe pam_fprintd da /etc/pam.d/greetd e dal locker
 ```
 Per tornare al demone Python serve ri-appaiare la NOSTRA PSK sul sensore (il driver goodixgf l'ha
-sovrascritta): `goodixfpd` fermo → `python driver_5125.py --write` con `state/linux_psk.bin` →
+sovrascritta): `goodixfpd` fermo → `python lab/driver_5125.py --write` con `state/linux_psk.bin` →
 `sudo systemctl enable --now goodixfpd`.
 
 ## Note

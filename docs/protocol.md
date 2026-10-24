@@ -49,7 +49,7 @@ busta    = outer(32) || HEADER(6) || nonce(16) || ct(32) || tag(16)       = 102 
 validator (0xbb020003) = SHA256(busta)                                    = 32 byte
 ```
 
-Implementazione: `tools/pairing.py`. Verifica di compatibilita' col 12508:
+Implementazione: `lab/pairing.py`. Verifica di compatibilita' col 12508:
 il tag AES-GCM della busta catturata autentica con queste costanti, e il validator calcolato
 `78958b50...eeba7` coincide con quello che il sensore riporta dopo la scrittura.
 
@@ -99,8 +99,8 @@ Sensore 80x64, 5120 campioni, immagine grezza 12 bit impacchettati.
 
 ## Stato implementazione
 
-- `tools/pairing.py` — provisioning PSK completo e verificato.
-- `driver_5125.py` — prototipo: provisioning E0 + handshake TLS-PSK in-process + acquisizione.
+- `lab/pairing.py` — provisioning PSK completo e verificato.
+- `lab/driver_5125.py` — prototipo: provisioning E0 + handshake TLS-PSK in-process + acquisizione.
   Il corpo E0 generato coincide byte-per-byte con quello del driver Windows (test offline).
   Manca la validazione sul banco della cattura immagine via TLS (serve il sensore su host).
 

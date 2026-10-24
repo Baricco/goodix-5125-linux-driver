@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """goodixfpd — demone di autenticazione per il sensore Goodix 27c6:5125.
 
-Possiede il sensore, mantiene la logica di verifica (riusa tools/sensor.py + fragment_mapper)
+Possiede il sensore, mantiene la logica di verifica (riusa lab/sensor.py + fragment_mapper)
 ed espone una verify su un socket Unix. PAM lo interroga tramite il client goodixfp-verify;
 non tocca mai la flash del sensore (nessun provisioning: assume la PSK gia' presente).
 
@@ -38,9 +38,9 @@ import threading
 import time
 
 _REPO = os.environ.get("GOODIXFP_REPO",
-                       os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+                       os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 sys.path.insert(0, os.path.join(_REPO, "goodix-fp-dump"))
-sys.path.insert(0, os.path.join(_REPO, "tools"))
+sys.path.insert(0, os.path.join(_REPO, "lab"))
 
 SOCKET_PATH = os.environ.get("GOODIXFP_SOCKET", "/run/goodixfpd/sock")
 STATE_DIR = os.environ.get("GOODIXFP_STATE", "/var/lib/goodixfp")

@@ -6,7 +6,7 @@ un reset andato male. Qui si tenta di FAR RIPARTIRE l'MCU con un soft-reset mand
 (l'ACK non arriva, lo ignoriamo), piu' clear-halt sugli endpoint e reset USB, poi si risincronizza
 con timeout lunghi. TUTTO NON DISTRUTTIVO: niente mcu_erase_app, niente scritture in flash (E0).
 
-Uso:  tools/.venv/bin/python tools/sensor_recover.py
+Uso:  tools/.venv/bin/python lab/sensor_recover.py
 """
 
 import os
@@ -98,7 +98,7 @@ def hard_reenumerate():
                     return busid
                 except PermissionError:
                     log("unbind/rebind richiede root: rilancia con "
-                        "'sudo tools/.venv/bin/python tools/sensor_recover.py'")
+                        "'sudo tools/.venv/bin/python lab/sensor_recover.py'")
                     return None
         except OSError:
             continue

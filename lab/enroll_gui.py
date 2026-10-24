@@ -10,8 +10,8 @@ Le impronte stanno in state/fingers/<nome>.npz. Gira da utente (udev uaccess). I
 aggancia).
 
 Uso:
-  tools/.venv/bin/python tools/enroll_gui.py
-  tools/.venv/bin/python tools/enroll_gui.py --replay captures      # demo senza hardware
+  tools/.venv/bin/python lab/enroll_gui.py
+  tools/.venv/bin/python lab/enroll_gui.py --replay captures      # demo senza hardware
 """
 
 import os

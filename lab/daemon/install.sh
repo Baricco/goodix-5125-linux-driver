@@ -3,13 +3,13 @@
 # Crea l'utente/gruppo, la regola udev, il client PAM, il servizio systemd, e fa il deploy in /opt.
 # NON tocca PAM: quello si fa a mano, col collaudo sicuro di docs/pam-integration.md.
 #
-# Uso:  sudo service/install.sh
+# Uso:  sudo lab/daemon/install.sh
 set -euo pipefail
 
-SRC="$(cd "$(dirname "$0")" && pwd)"          # directory service/ del repo
+SRC="$(cd "$(dirname "$0")" && pwd)"          # directory lab/daemon/ del repo
 GROUP=goodixfp; USERN=goodixfp
 
-[ "$(id -u)" = 0 ] || { echo "deve girare come root: sudo service/install.sh" >&2; exit 1; }
+[ "$(id -u)" = 0 ] || { echo "deve girare come root: sudo lab/daemon/install.sh" >&2; exit 1; }
 
 echo "[install] 1/5 utente e gruppo di sistema '$USERN'"
 getent group  "$GROUP" >/dev/null || groupadd -r "$GROUP"
@@ -42,7 +42,7 @@ cat <<'NEXT'
 Installato. ORA il collaudo, nell'ordine (niente PAM finché il socket non va):
 
  1) Registra un'impronta con la GUI (da utente) e copiala nello store di sistema:
-      tools/.venv/bin/python tools/enroll_gui.py        # mappa denso + Salva
+      tools/.venv/bin/python lab/enroll_gui.py        # mappa denso + Salva
       sudo install -Dm640 -o root -g goodixfp \
            state/fingers/<nome>.npz /var/lib/goodixfp/$USER/<nome>.npz
 
@@ -57,6 +57,6 @@ Installato. ORA il collaudo, nell'ordine (niente PAM finché il socket non va):
       auth  sufficient  pam_exec.so  quiet  /usr/local/lib/goodixfp/goodixfp-verify
     Dettagli e login al greeter: docs/pam-integration.md
 
-Per disinstallare tutto:  sudo service/uninstall.sh
+Per disinstallare tutto:  sudo lab/daemon/uninstall.sh
 ============================================================
 NEXT

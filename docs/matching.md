@@ -1,12 +1,12 @@
 # Matching con SIGFM: stato reale
 
 Il riconoscimento usa **SIGFM** ("SIFT Is Good For Matching"), l'algoritmo di
-goodix-fp-linux-dev pensato proprio per sensori 64x80. Port fedele in `tools/sigfm.py`
-(da `cpp/match.cpp`/`compute.cpp` del repo upstream), template multi-frame in `tools/template.py`.
+goodix-fp-linux-dev pensato proprio per sensori 64x80. Port fedele in `lab/sigfm.py`
+(da `cpp/match.cpp`/`compute.cpp` del repo upstream), template multi-frame in `lab/template.py`.
 
 ## Perche' la prima versione (RANSAC) falliva
 
-Il primo tentativo (`tools/match.py`) usava SIFT + `findHomography(RANSAC)`: fit di UNA
+Il primo tentativo (`lab/match.py`) usava SIFT + `findHomography(RANSAC)`: fit di UNA
 trasformazione globale, score = n. inlier. Su 64x64 con pochi match rumorosi RANSAC non fitta
 nulla di stabile -> score 0 sia per genuino sia per impostore, nessuna soglia separa.
 
@@ -22,7 +22,7 @@ cluster coerente), al contrario del fit a omografia singola.
 
 ## Preprocessing
 
-`tools/preprocessor.py` (sottrazione baseline clear + normalizzazione per colonna + CLAHE)
+`lab/preprocessor.py` (sottrazione baseline clear + normalizzazione per colonna + CLAHE)
 batte nettamente il min-max grezzo del demo upstream. Misurato (template-max, dati reali):
 
 | probe                     | min-max grezzo | column-norm + CLAHE |
@@ -52,12 +52,12 @@ dito; i tocchi indipendenti che cadono altrove non hanno nulla con cui sovrappor
 La soluzione e' l'**enrollment guidato per copertura** (stile Windows Hello): 12-15 tocchi
 distribuiti su tutto il polpastrello (punta, sinistra, destra, base, centro), cosi' che ogni
 tocco futuro si sovrapponga ad almeno un frame registrato. Con quel dataset:
-1. ri-costruire il template (`tools/template.py enroll`),
+1. ri-costruire il template (`lab/template.py enroll`),
 2. tarare la soglia sulla separazione genuino/impostore reale (ora provvisoria a 300).
 
 ## Prossimo passo operativo
 
-Sessione di cattura su hardware (la lancia l'utente): `driver_5125.py --enroll 15 --tag A`
+Sessione di cattura su hardware (la lancia l'utente): `lab/driver_5125.py --enroll 15 --tag A`
 muovendo il dito per coprire tutta la superficie, poi alcuni tocchi di verifica genuini + un
 paio con un altro dito. Il template e la taratura si fanno offline dai `*_plain.bin` salvati.
 
@@ -73,8 +73,8 @@ zone connesse si cuce correttamente con le creste continue.
 
 Il limite non e' il dito ma l'enroll a punti: `SAME_SPOT` crea una zona nuova solo quando
 l'overlap e' gia' perso, quindi butta i frame intermedi che servirebbero a cucire (componente
-connessa massima ~8-15 su 113). Soluzione: enroll a MOSAICO INCREMENTALE (`tools/mosaic.py`,
-`tools/mosaic_session.py`): si tiene il flusso denso, ogni frame si registra sulla mappa corrente
+connessa massima ~8-15 su 113). Soluzione: enroll a MOSAICO INCREMENTALE (`lab/mosaic.py`,
+`lab/mosaic_session.py`): si tiene il flusso denso, ogni frame si registra sulla mappa corrente
 e la estende solo se si aggancia; i buchi (aree dentro l'inviluppo non coperte) emergono dalla
-copertura e guidano la mappatura. La GUI (`tools/enroll_gui.py`) mostra il mosaico live coi buchi
+copertura e guidano la mappatura. La GUI (`lab/enroll_gui.py`) mostra il mosaico live coi buchi
 in rosso. La verifica resta sullo score SIGFM (0 falsi positivi) piu' gli inlier di registrazione.

@@ -38,7 +38,7 @@ def main():
         fd = os.open(node, os.O_WRONLY)
     except PermissionError:
         sys.exit(f"niente permesso su {node} (regola udev uaccess attiva? prova dopo un relogin, "
-                 f"oppure: sudo tools/.venv/bin/python tools/usb_reset.py)")
+                 f"oppure: sudo tools/.venv/bin/python lab/usb_reset.py)")
     try:
         fcntl.ioctl(fd, USBDEVFS_RESET, 0)
     finally:

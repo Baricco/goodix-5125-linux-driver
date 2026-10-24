@@ -6,7 +6,7 @@ nostra, la scrive nel sensore con un solo comando E0 preservando il blob bb01000
 esistente, poi stabilisce la sessione TLS-PSK e acquisisce immagini grezze.
 
 Riusa il trasporto USB e il framing A0 di goodix-fp-dump (goodix.py, protocol.py).
-L'algoritmo della busta PSK e' quello pubblicato da grold/sorguido (tools/pairing.py),
+L'algoritmo della busta PSK e' quello pubblicato da grold/sorguido (lab/pairing.py),
 verificato byte-per-byte contro il firmware 12508.
 
 Sicurezza: la scrittura E0 tocca solo il settore 4 della flash (store PSK), e' reversibile
@@ -14,8 +14,8 @@ e non puo' bloccare il chip (vedi re/analisi-driver-windows.md). Richiede --writ
 eseguire davvero la scrittura.
 
 Uso:
-  sudo .venv/bin/python driver_5125.py --probe                # sola lettura
-  sudo .venv/bin/python driver_5125.py --write --capture      # provisioning + immagine
+  sudo .venv/bin/python lab/driver_5125.py --probe                # sola lettura
+  sudo .venv/bin/python lab/driver_5125.py --write --capture      # provisioning + immagine
 """
 
 import argparse
@@ -28,8 +28,10 @@ import sys
 import threading
 import time
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "goodix-fp-dump"))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "tools"))
+# lab/ sta dentro il repo: goodix-fp-dump/, state/ e captures/ restano nella radice.
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "goodix-fp-dump"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import usb.core
 
@@ -42,13 +44,13 @@ PRODUCT = 0x5125
 SENSOR_WIDTH = 80
 SENSOR_HEIGHT = 64
 TLS_IDENTITY = b"Client_identity"
-PSK_STORE = os.path.join(os.path.dirname(__file__), "state", "linux_psk.bin")
+PSK_STORE = os.path.join(ROOT, "state", "linux_psk.bin")
 WAIT_FOR_FINGER = False
 CAPTURE_TAG = "fingerprint"
 ENROLL_COUNT = 1
 
 # Blocco config catturato dalla sessione del driver Windows (0x90), 224 byte.
-CONFIG90 = open(os.path.join(os.path.dirname(__file__), "captures", "config90.bin"), "rb").read()
+CONFIG90 = open(os.path.join(ROOT, "captures", "config90.bin"), "rb").read()
 
 
 def log(msg):

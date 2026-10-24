@@ -3,23 +3,22 @@
 # copia la PSK appaiata al sensore (senza rigenerarla). Ripetibile: rilancialo dopo ogni modifica
 # al codice per aggiornare la copia di produzione. Lo sviluppo resta in ~/goodix-driver (git).
 #
-# Uso:  sudo service/deploy.sh
+# Uso:  sudo lab/daemon/deploy.sh
 set -euo pipefail
 
-SRC="$(cd "$(dirname "$0")/.." && pwd)"     # radice del repo (service/ sta dentro)
+SRC="$(cd "$(dirname "$0")/../.." && pwd)"  # radice del repo (lab/daemon/ sta dentro)
 DEST=/opt/goodix-driver
 GROUP=goodixfp
 
-[ "$(id -u)" = 0 ] || { echo "deve girare come root: sudo service/deploy.sh" >&2; exit 1; }
+[ "$(id -u)" = 0 ] || { echo "deve girare come root: sudo lab/daemon/deploy.sh" >&2; exit 1; }
 getent group "$GROUP" >/dev/null || groupadd -r "$GROUP"
 
 echo "[deploy] copio il runtime in $DEST (solo i file che servono, niente .git/venv di sviluppo)"
-install -d -m755 "$DEST" "$DEST/tools" "$DEST/goodix-fp-dump" "$DEST/service" "$DEST/captures"
-install -m644 "$SRC"/driver_5125.py              "$DEST"/
-install -m644 "$SRC"/tools/*.py                  "$DEST"/tools/
+install -d -m755 "$DEST" "$DEST/lab" "$DEST/goodix-fp-dump" "$DEST/lab/daemon" "$DEST/captures"
+install -m644 "$SRC"/lab/*.py                    "$DEST"/lab/
 install -m644 "$SRC"/goodix-fp-dump/*.py         "$DEST"/goodix-fp-dump/
-install -m644 "$SRC"/service/goodixfpd.py        "$DEST"/service/
-install -m755 "$SRC"/service/goodixfp-verify     "$DEST"/service/
+install -m644 "$SRC"/lab/daemon/goodixfpd.py     "$DEST"/lab/daemon/
+install -m755 "$SRC"/lab/daemon/goodixfp-verify  "$DEST"/lab/daemon/
 # config90.bin: driver_5125 lo legge all'import (blocco di configurazione MCU). Necessario.
 install -m644 "$SRC"/captures/config90.bin       "$DEST"/captures/
 chown -R root:root "$DEST"

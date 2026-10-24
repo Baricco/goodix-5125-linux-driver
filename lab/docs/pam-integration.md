@@ -1,10 +1,10 @@
 # Login a impronta con goodixfpd (Strada A)
 
 Integrazione dell'impronta nello stack di autenticazione Linux **senza** il driver C: un demone
-di sistema (`service/goodixfpd.py`) possiede il sensore ed espone una verify su socket Unix; PAM
-lo interroga con un piccolo client (`service/goodixfp-verify`). Copre `sudo`, lo sblocco schermo e
+di sistema (`lab/daemon/goodixfpd.py`) possiede il sensore ed espone una verify su socket Unix; PAM
+lo interroga con un piccolo client (`lab/daemon/goodixfp-verify`). Copre `sudo`, lo sblocco schermo e
 il login al greeter. È la via rapida per usarlo *adesso*; la via canonica e pubblicabile per tutti
-resta il driver libfprint (Strada B, `docs/porting-c.md`).
+resta il driver libfprint (Strada B, `lab/docs/porting-c.md`).
 
 > **Regola d'oro anti-lockout:** l'impronta è sempre un fattore `sufficient` con *fallback alla
 > password*. Non metterla mai `required` da sola. Durante il setup tieni **una shell root già
@@ -31,10 +31,10 @@ proprietà di root: il codice di autenticazione non deve essere scrivibile da un
 Lo sviluppo resta in `~/goodix-driver`.
 
 ```bash
-sudo service/install.sh        # utente+gruppo, deploy in /opt (venv ricreato + PSK), udev, systemd
+sudo lab/daemon/install.sh        # utente+gruppo, deploy in /opt (venv ricreato + PSK), udev, systemd
 # ...registra un'impronta e collauda il socket (lo stampa install.sh), POI colleghi PAM...
-sudo service/deploy.sh         # ri-sincronizza /opt dopo ogni modifica al codice
-sudo service/uninstall.sh      # rimuove tutto (aggiungi --purge per impronte+utente)
+sudo lab/daemon/deploy.sh         # ri-sincronizza /opt dopo ogni modifica al codice
+sudo lab/daemon/uninstall.sh      # rimuove tutto (aggiungi --purge per impronte+utente)
 ```
 
 `install.sh` **non** tocca PAM: lo colleghi a mano col collaudo sicuro qui sotto. Il resto di
@@ -49,15 +49,15 @@ sudo groupadd -r goodixfp
 sudo useradd  -r -g goodixfp -s /usr/sbin/nologin -d /var/lib/goodixfp goodixfp
 
 # 2. accesso al sensore per il gruppo (sostituisce la vecchia 70-goodix-5125.rules)
-sudo cp service/70-goodixfp.rules /etc/udev/rules.d/
+sudo cp lab/daemon/70-goodixfp.rules /etc/udev/rules.d/
 sudo rm -f /etc/udev/rules.d/70-goodix-5125.rules
 sudo udevadm control --reload && sudo udevadm trigger
 
 # 3. client PAM
-sudo install -Dm755 service/goodixfp-verify /usr/local/lib/goodixfp/goodixfp-verify
+sudo install -Dm755 lab/daemon/goodixfp-verify /usr/local/lib/goodixfp/goodixfp-verify
 
 # 4. demone
-sudo cp service/goodixfpd.service /etc/systemd/system/
+sudo cp lab/daemon/goodixfpd.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now goodixfpd
 systemctl status goodixfpd          # deve stampare "in ascolto su /run/goodixfpd/sock"
@@ -68,7 +68,7 @@ systemctl status goodixfpd          # deve stampare "in ascolto su /run/goodixfp
 L'enroll si fa con la GUI (da utente, denso: riempi i buchi rossi fino a "copertura buona"):
 
 ```bash
-tools/.venv/bin/python tools/enroll_gui.py       # mappa + Salva -> state/fingers/<nome>.npz
+tools/.venv/bin/python lab/enroll_gui.py       # mappa + Salva -> state/fingers/<nome>.npz
 ```
 
 Poi copia il template nello store di sistema del tuo utente:
@@ -84,7 +84,7 @@ Puoi registrare più impronte (più `.npz`): la verify le prova tutte.
 
 1. **Socket, senza PAM.** Da utente, tocca il sensore quando richiesto:
    ```bash
-   GOODIXFP_SOCKET=/run/goodixfpd/sock python service/goodixfp-verify $USER ; echo "esito=$?"
+   GOODIXFP_SOCKET=/run/goodixfpd/sock python lab/daemon/goodixfp-verify $USER ; echo "esito=$?"
    ```
    `esito=0` = riconosciuto. Ripeti con un altro dito: deve dare `1`.
 

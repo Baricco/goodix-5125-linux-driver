@@ -2,9 +2,9 @@
 # uninstall.sh — rimuove l'installazione di sistema del demone. Reversibile e sicuro.
 # Lascia /var/lib/goodixfp (le tue impronte) e l'utente goodixfp, salvo --purge.
 #
-# Uso:  sudo service/uninstall.sh [--purge]
+# Uso:  sudo lab/daemon/uninstall.sh [--purge]
 set -euo pipefail
-[ "$(id -u)" = 0 ] || { echo "deve girare come root: sudo service/uninstall.sh" >&2; exit 1; }
+[ "$(id -u)" = 0 ] || { echo "deve girare come root: sudo lab/daemon/uninstall.sh" >&2; exit 1; }
 PURGE="${1:-}"
 
 echo "[uninstall] fermo e rimuovo il servizio systemd"
@@ -31,5 +31,5 @@ if [ "$PURGE" = "--purge" ]; then
   rm -rf /var/lib/goodixfp
 else
   echo "  (Lasciati: /var/lib/goodixfp con le impronte, e l'utente goodixfp."
-  echo "   Per toglierli: sudo service/uninstall.sh --purge)"
+  echo "   Per toglierli: sudo lab/daemon/uninstall.sh --purge)"
 fi

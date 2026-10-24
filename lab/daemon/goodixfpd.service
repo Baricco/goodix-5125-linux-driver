@@ -12,13 +12,13 @@ User=goodixfp
 Group=goodixfp
 SupplementaryGroups=goodixfp
 
-# Percorso del repository (contiene tools/, goodix-fp-dump/, driver_5125.py).
+# Percorso del repository (contiene lab/, goodix-fp-dump/).
 # Adatta WorkingDirectory/GOODIXFP_REPO all'installazione reale.
 WorkingDirectory=/opt/goodix-driver
 Environment=GOODIXFP_REPO=/opt/goodix-driver
 Environment=GOODIXFP_STATE=/var/lib/goodixfp
 Environment=GOODIXFP_SOCKET=/run/goodixfpd/sock
-ExecStart=/opt/goodix-driver/tools/.venv/bin/python /opt/goodix-driver/service/goodixfpd.py
+ExecStart=/opt/goodix-driver/tools/.venv/bin/python /opt/goodix-driver/lab/daemon/goodixfpd.py
 
 # /run/goodixfpd creato con gruppo goodixfp -> il socket 0660 e' raggiungibile da root (PAM).
 RuntimeDirectory=goodixfpd

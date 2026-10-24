@@ -17,7 +17,7 @@ import fcntl
 
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(_ROOT, "goodix-fp-dump"))
-sys.path.insert(0, _ROOT)               # per driver_5125.py (nella root del progetto)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # driver_5125.py sta in lab/
 sys.path.insert(0, os.path.dirname(__file__))
 
 import usb.core
@@ -103,7 +103,7 @@ class Sensor:
             if fw is None:
                 raise SystemError(
                     "sensore non sincronizzabile neanche dopo reset USB: potrebbe essere in uno "
-                    "stato bloccato profondo (serve recovery). Vedi tools/sensor_recover.py")
+                    "stato bloccato profondo (serve recovery). Vedi lab/sensor_recover.py")
         if not fw.startswith("GF_ST411SEC_APP_125"):
             raise SystemError(f"firmware non previsto: {fw}")
         self.firmware = fw

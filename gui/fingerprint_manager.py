@@ -5,18 +5,18 @@ Registra, elenca, cancella e testa le impronte di un utente tramite il
 servizio di sistema fprintd (net.reactivated.Fprint) via QtDBus. Nessuna
 dipendenza oltre PySide6: QtDBus parla direttamente col bus di sistema.
 
-Backend = fprintd + libfprint goodix (Strada C, pubblicabile). La GUI NON
+Backend = fprintd + libfprint-goodixgf (vedi packaging/). La GUI NON
 tocca il sensore direttamente: delega tutto a fprintd, quindi convive col
 login a impronta (pam_fprintd) senza litigare il device.
 
-Uso:  tools/.venv/bin/python tools/fingerprint_manager.py
+Uso:  python gui/fingerprint_manager.py        (serve PySide6: pacman -S pyside6)
 """
 from __future__ import annotations
 
 import getpass
 import sys
 
-from PySide6.QtCore import Qt, Slot, SLOT
+from PySide6.QtCore import Qt, QTimer, Slot, SLOT
 from PySide6.QtDBus import (
     QDBusConnection, QDBusInterface, QDBusMessage, QDBusObjectPath,
     QDBusVariant,
@@ -134,6 +134,7 @@ class FingerprintManager(QMainWindow):
 
         self.progress = QProgressBar()
         self.progress.setTextVisible(True)
+        self.progress.setVisible(False)      # solo durante una registrazione
         right.addWidget(self.progress)
 
         right.addSpacing(10)
@@ -253,8 +254,12 @@ class FingerprintManager(QMainWindow):
             return
         self.busy_op = "enroll"
         self.enroll_done = 0
+        # Il numero di stadi puo' cambiare (il driver chiude prima quando la
+        # copertura converge): rileggilo a ogni registrazione.
+        self.enroll_total = int(self._get_prop("num-enroll-stages") or self.enroll_total)
         self.progress.setMaximum(max(self.enroll_total, 1))
         self.progress.setValue(0)
+        self.progress.setVisible(True)
         self._set_busy_ui(True)
         self._set_status("Appoggia il dito sul sensore e segui le indicazioni…")
 
@@ -322,6 +327,10 @@ class FingerprintManager(QMainWindow):
         self._set_status(f"[{self.enroll_done}/{self.progress.maximum()}] {hint}")
         if done:
             ok = result == "enroll-completed"
+            if ok:
+                # L'ultimo stadio arriva come enroll-completed (non stage-passed),
+                # e con la convergenza di copertura il totale non viene raggiunto.
+                self.progress.setValue(self.progress.maximum())
             self._device().call("EnrollStop")
             self._finish_op("Impronta registrata ✓" if ok else f"Enroll: {hint}")
             self.refresh_list()
@@ -338,10 +347,19 @@ class FingerprintManager(QMainWindow):
 
     # ---------------- Helper UI ----------------
     def _finish_op(self, msg: str) -> None:
+        was_enroll = self.busy_op == "enroll"
         self.busy_op = None
         self._release()
         self._set_busy_ui(False)
         self._set_status(msg)
+        if was_enroll:
+            # Lascia vedere il 100% un istante, poi togli la barra.
+            QTimer.singleShot(1500, self._hide_progress)
+
+    def _hide_progress(self) -> None:
+        if self.busy_op != "enroll":
+            self.progress.setVisible(False)
+            self.progress.setValue(0)
 
     def _set_busy_ui(self, busy: bool) -> None:
         self.btn_enroll.setEnabled(not busy)
