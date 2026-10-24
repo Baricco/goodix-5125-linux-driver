@@ -1,0 +1,845 @@
+--- a/drivers/goodixgf/core/goodix_capture.c
++++ b/drivers/goodixgf/core/goodix_capture.c
+@@ -334,10 +334,17 @@
+         gx_fdt_learn_up_base(d, data + 4, touchflag);
+     else if (irq == 0x200)
+         gx_fdt_learn_down_base(d, data + 4);
+-    /* 事件回调（libfprint 对接：手指按下/抬起状态上报） */
+-    if (d->event_cb && (irq == 2 || irq == 0x200))
+-        d->event_cb(d, irq == 2 ? GX_EV_FINGER_DOWN : GX_EV_FINGER_UP,
+-                    d->event_cb_user);
++    /* 事件回调（libfprint 对接：手指按下/抬起状态上报）。
++     * 2/0x80/0x82 = 手指按下：0x80/0x82 "reverse" 也是真实触碰，必须上报
++     * PRESENT 让 libfprint 进入 CAPTURE 态，否则交付图像时
++     * fpi_image_device_image_captured 的 state==CAPTURE 断言失败（卡死）。
++     * 基线不从 reverse 帧学习（上面只在 2/0x200 学 up/down 表）。 */
++    if (d->event_cb) {
++        if (irq == 2 || irq == 0x80 || irq == 0x82)
++            d->event_cb(d, GX_EV_FINGER_DOWN, d->event_cb_user);
++        else if (irq == 0x200)
++            d->event_cb(d, GX_EV_FINGER_UP, d->event_cb_user);
++    }
+ }
+ 
+ void gx_capture_set_event_cb(struct goodix_dev *d,
+@@ -474,11 +481,16 @@
+             /* FDT down 事件 -> 请求取图 ->
+              * SetMode Image (cmd0=2 cmd1=0 = 0x20, data=[1,0])，
+              * MCU 随即曝光并推 cmd0=2 图像帧 */
+-            if (irq == 2 && img_req && !*img_req) {
++            /* irq==2 手指按下；0x80/0x82 "reverse"：基线偏差致真实触碰
++             * 反向极性上报，同样请求取图（坏帧由下游 gx_fdt_check_finger
++             * + 拒绝重布防循环筛除）。修复 enroll 偶发卡死：finger-detect
++             * 上报 0x80 被忽略 -> 不取图 -> "no image frame received"。 */
++            if ((irq == 2 || irq == 0x80 || irq == 0x82) &&
++                img_req && !*img_req) {
+                 uint8_t im[2] = { 1, 0 };
+                 *img_req = 1;
+-                LOG("capture: finger down, request image "
+-                    "(SetMode Image 0x20 [1,0])");
++                LOG("capture: finger touch (irq 0x%x), request image "
++                    "(SetMode Image 0x20 [1,0])", irq);
+                 gx_send_cmd(d, 0x20, im, 2, 200);
+             }
+             return 0;
+@@ -490,9 +502,13 @@
+     return 0;
+ }
+ 
+-/* 等设备推送 cmd0=2 图像帧（混合通道） */
++/* 等设备推送 cmd0=2 图像帧（混合通道）。
++ * cancellable=0：已发出 SetMode Image、图像正在路上时用——中途放弃会把
++ * 半条 TLS 记录留在通道里，之后所有图像都解不出来（enroll 换阶段时
++ * libfprint deactivate 正好落在这个窗口）。此时读完（~150ms，受 timeout
++ * 限制）再由调用方检查 capture_stop。 */
+ static int wait_image(struct goodix_dev *d, uint8_t *img, uint16_t *size,
+-                      int timeout_ms)
++                      int timeout_ms, int cancellable)
+ {
+     uint8_t *pl = d->rx_scratch;    /* 设备级 payload 工作区 */
+     int deadline = timeout_ms > 0 ? timeout_ms : 10000;
+@@ -503,7 +519,7 @@
+     if (tls)
+         gx_tls_capture_mode(d, 1);
+     while (deadline > 0) {
+-        if (d->capture_stop) {
++        if (cancellable && d->capture_stop) {
+             if (tls)
+                 gx_tls_capture_mode(d, 0);
+             return -4;
+@@ -638,7 +654,7 @@
+     uint16_t sz = 0;
+     LOG("capture base image (SetMode Image 0x20 [1,0], no-finger frame)");
+     gx_send_cmd(d, 0x20, im, 2, 200);
+-    if (wait_image(d, d->img_base, &sz, 4000) != 0 ||
++    if (wait_image(d, d->img_base, &sz, 4000, 1) != 0 ||
+         sz != d->img_size) {
+         LOG("base image capture failed (sz=%u)", sz);
+         return -1;
+@@ -649,6 +665,87 @@
+     return 0;
+ }
+ 
++/* 是否在每次布防前采新鲜无手指帧：默认开启（GOODIX_IMGPROC_FRESH_BASE=0
++ * 关闭；标定 dump 模式下总是采集以便离线对比） */
++static int fresh_wanted(const struct goodix_dev *d)
++{
++    const char *e = getenv("GOODIX_IMGPROC_FRESH_BASE");
++    if (d->fresh_broken)
++        return 0;
++    return getenv("GOODIX_DUMP_IMGPROC") != NULL || !e || atoi(e) != 0;
++}
++
++int gx_capture_fresh_image(struct goodix_dev *d)
++{
++    uint8_t im[2] = { 1, 0 };
++    uint16_t sz = 0;
++    uint8_t *tmp;
++    void (*cb)(struct goodix_dev *, int, void *) = d->event_cb;
++    const char *e = getenv("GOODIX_FRESH_MAXDC");
++    double maxdc = e && *e ? atof(e) : 300.0;
++    const char *er = getenv("GOODIX_FRESH_MAXRIDGE");
++    double maxridge = er && *er ? atof(er) : 12.0;
++    const uint8_t *ref;
++    double dc = 0.0;
++    int r;
++
++    tmp = malloc(GF_IMG_MAX);
++    if (!tmp)
++        return -1;
++    /* 刚抬起的手指留一点离开时间；期间不向 libfprint 上报手指事件 */
++    usleep(100000);
++    if (d->capture_stop) {          /* 尚未发命令，可直接放弃 */
++        free(tmp);
++        return -4;
++    }
++    d->event_cb = NULL;
++    gx_send_cmd(d, 0x20, im, 2, 200);
++    r = wait_image(d, tmp, &sz, 2000, 0);
++    d->event_cb = cb;
++    if (r != 0 || sz != d->img_size) {
++        free(tmp);
++        /* 超时/失败：图像请求可能仍挂在 MCU 上，再叠一个请求会卡死后续
++         * 取图——本次 open 内停用新鲜帧。 */
++        d->fresh_broken = true;
++        LOG("fresh no-finger frame failed (%d, sz=%u) - disabled for this "
++            "session, using stored base", r, sz);
++        return -1;
++    }
++    gx_imgproc_dump16(d, "pre16", tmp);
++    /* 合理性检查：与上一可信新鲜帧（跟踪漂移）或存档基线比较整体压低量。
++     * 手指在上时压低 ~1000+ 计数；被拒时保留上一可信新鲜帧不动（按住
++     * 手指连续重试时基线仍是几秒前的）。 */
++    ref = d->img_fresh_valid ? d->img_fresh : d->img_base_valid ? d->img_base : NULL;
++    if (ref) {
++        uint32_t npix = (uint32_t)d->img_w * d->img_h;
++        for (uint32_t i = 0; i < npix; i++)
++            dc += (double)px16(tmp, i) - (double)px16(ref, i);
++        dc /= npix;
++    }
++    if (ref && (dc > maxdc || dc < -maxdc)) {
++        /* 尚无可信新鲜帧时，存档基线本身可能已严重漂移：没有脊谷结构
++         * （带通对比度低）说明只是漂移而非手指，仍可采用。 */
++        struct gx_imgproc_params p = GX_IMGPROC_SIGFM_PARAMS;
++        struct gx_imgproc_signal sig = { 0 };
++        p.fresh_base = 0;
++        if (d->img_fresh_valid || gx_imgproc_signal(d, &p, tmp, &sig) != 0 ||
++            sig.ridge >= maxridge) {
++            LOG("fresh no-finger frame rejected: dc=%.0f ridge=%.1f vs %s "
++                "(finger on sensor?)", dc, sig.ridge,
++                d->img_fresh_valid ? "last fresh" : "stored base");
++            free(tmp);
++            return 1;
++        }
++        LOG("fresh no-finger frame: stored base drifted (dc=%.0f) but no "
++            "ridge structure (%.1f), accepted", dc, sig.ridge);
++    }
++    memcpy(d->img_fresh, tmp, sz);
++    d->img_fresh_valid = true;
++    LOG("fresh no-finger frame ok (dc=%.0f)", dc);
++    free(tmp);
++    return 0;
++}
++
+ /* 等设备推送 FDT up（IrqStatus=0x200）帧：gx_capture 收尾的 0x34
+  * 布防之后，手指离开传感器时 MCU 会推该事件（设备数据的
+  * cmd0=3 分流）。libfprint 驱动用它上报 FP_FINGER_NONE。 */
+@@ -757,6 +854,10 @@
+         LOG("capture: SetMode Image (0x20 [1,0]) - direct exposure");
+         gx_send_cmd(d, 0x20, im, 2, 200);
+     } else {
++        /* 新鲜无手指帧：紧邻手指帧的基线（标定 dump / FRESH_BASE 模式） */
++        if (fresh_wanted(d) &&
++            (gx_capture_fresh_image(d) == -4 || d->capture_stop))
++            return -4;
+         arm_fdt_down(d);
+     }
+ 
+@@ -774,7 +875,7 @@
+         int direct = getenv("GOODIX_CAPTURE_IMAGE_MODE") != NULL;
+         int rejects = 0;
+         for (;;) {
+-            r = wait_image(d, img, size, 10000);
++            r = wait_image(d, img, size, 10000, 1);
+             if (r != 0)
+                 break;
+             if (direct || !d->img_base_valid)
+--- a/drivers/goodixgf/core/goodix_imgproc.c
++++ b/drivers/goodixgf/core/goodix_imgproc.c
+@@ -257,6 +257,303 @@
+     free(blur);
+ }
+ 
++/* ================= GX_IMGPROC_MODE_RIDGE =================
++ * 背景：本传感器的 (raw - base) 除了脊谷信号外还带一个固定于像素网格的
++ * 残影（逐像素/逐列增益 x 手指整体压低量，及基线漂移），弱按压时它在
++ * 百分位拉伸后占满整幅图，SIFT 关键点全落在残影上 -> 不同手指互相匹配。
++ * 本管线全程浮点（不做 4095 截断），用 DoG 带通只保留脊距频段
++ * （σ1≈1 去像素噪声，σ2≈4 去残影/压力的低频分量），可选按基线形状回归
++ * 去除增益残影，再拉伸 + CLAHE 均衡局部对比度。参数与离线标定
++ * （tools/fp_tune）的 OpenCV/numpy 参考实现一致：高斯核长 round(8σ+1)|1、
++ * 边界 reflect-101、百分位线性插值、CLAHE 同 OpenCV 算法。 */
++
++static const uint8_t *select_base(const struct goodix_dev *d,
++                                  const struct gx_imgproc_params *p)
++{
++    if (p->fresh_base && d->img_fresh_valid)
++        return d->img_fresh;
++    return d->img_base_valid ? d->img_base : NULL;
++}
++
++/* reflect-101 边界索引（OpenCV BORDER_DEFAULT），要求 |越界| < n */
++static inline int reflect101(int i, int n)
++{
++    if (i < 0)
++        return -i;
++    if (i >= n)
++        return 2 * n - 2 - i;
++    return i;
++}
++
++/* 可分离高斯（浮点），核同 cv::getGaussianKernel(round(8σ+1)|1, σ)。
++ * 返回 0 成功、-1 分配失败（out 保持不变）。 */
++static int gauss_f(const float *in, float *out, int w, int h, float sigma)
++{
++    int ks = ((int)lroundf(sigma * 8.0f + 1.0f)) | 1;
++    int r = ks / 2;
++    float *k, *tmp;
++    float ksum = 0.0f;
++
++    if (r >= w || r >= h)
++        r = (w < h ? w : h) - 1;
++    ks = 2 * r + 1;
++    k = malloc((size_t)ks * sizeof(float));
++    tmp = malloc((size_t)w * h * sizeof(float));
++    if (!k || !tmp) {
++        free(k);
++        free(tmp);
++        return -1;
++    }
++    for (int i = 0; i < ks; i++) {
++        float t = (float)(i - r);
++        k[i] = expf(-(t * t) / (2.0f * sigma * sigma));
++        ksum += k[i];
++    }
++    for (int i = 0; i < ks; i++)
++        k[i] /= ksum;
++    for (int y = 0; y < h; y++)
++        for (int x = 0; x < w; x++) {
++            float acc = 0.0f;
++            for (int j = -r; j <= r; j++)
++                acc += k[j + r] * in[y * w + reflect101(x + j, w)];
++            tmp[y * w + x] = acc;
++        }
++    for (int y = 0; y < h; y++)
++        for (int x = 0; x < w; x++) {
++            float acc = 0.0f;
++            for (int j = -r; j <= r; j++)
++                acc += k[j + r] * tmp[reflect101(y + j, h) * w + x];
++            out[y * w + x] = acc;
++        }
++    free(k);
++    free(tmp);
++    return 0;
++}
++
++/* d = raw - base（浮点）；deghost 时减去 d 在 (base - mean(base)) 上的
++ * 最小二乘投影：增益残影与基线逐像素形状同源（手指整体压低量 x 增益）。 */
++static void ridge_diff(const uint8_t *img16, const uint8_t *base,
++                       uint32_t npix, int deghost, float *dst)
++{
++    double bmean = 0.0, num = 0.0, den = 0.0, dmean = 0.0;
++
++    for (uint32_t i = 0; i < npix; i++) {
++        dst[i] = (float)imgproc_px16(img16, i) - (float)imgproc_px16(base, i);
++        dmean += dst[i];
++        bmean += imgproc_px16(base, i);
++    }
++    if (!deghost)
++        return;
++    dmean /= npix;
++    bmean /= npix;
++    for (uint32_t i = 0; i < npix; i++) {
++        double rb = imgproc_px16(base, i) - bmean;
++        num += (dst[i] - dmean) * rb;
++        den += rb * rb;
++    }
++    if (den <= 0.0)
++        return;
++    for (uint32_t i = 0; i < npix; i++)
++        dst[i] -= (float)(num / den * (imgproc_px16(base, i) - bmean));
++}
++
++/* DoG 带通：dst = G(σ1) - G(σ2)，原地可用（dst == src）。 */
++static int ridge_dog(const float *src, float *dst, int w, int h,
++                     float s1, float s2)
++{
++    uint32_t npix = (uint32_t)w * h;
++    float *g1 = malloc(npix * sizeof(float));
++    float *g2 = malloc(npix * sizeof(float));
++    int r = -1;
++
++    if (g1 && g2 && gauss_f(src, g1, w, h, s1) == 0 &&
++        gauss_f(src, g2, w, h, s2) == 0) {
++        for (uint32_t i = 0; i < npix; i++)
++            dst[i] = g1[i] - g2[i];
++        r = 0;
++    }
++    free(g1);
++    free(g2);
++    return r;
++}
++
++static int cmp_float(const void *a, const void *b)
++{
++    float x = *(const float *)a, y = *(const float *)b;
++    return (x > y) - (x < y);
++}
++
++/* numpy.percentile（linear）于已排序数组 */
++static float pct_sorted(const float *v, uint32_t n, float q)
++{
++    float pos = (float)(n - 1) * q / 100.0f;
++    uint32_t i = (uint32_t)pos;
++    float fr = pos - (float)i;
++    if (i + 1 >= n)
++        return v[n - 1];
++    return v[i] + fr * (v[i + 1] - v[i]);
++}
++
++/* 百分位拉伸到 0..255（截断取整，同 numpy astype(uint8)） */
++static int ridge_stretch(const float *src, uint8_t *out8, uint32_t npix,
++                         uint8_t pct_lo, uint8_t pct_hi)
++{
++    float *s = malloc(npix * sizeof(float));
++    float lo, hi, sc;
++
++    if (!s)
++        return -1;
++    memcpy(s, src, npix * sizeof(float));
++    qsort(s, npix, sizeof(float), cmp_float);
++    lo = pct_sorted(s, npix, pct_lo);
++    hi = pct_sorted(s, npix, pct_hi);
++    free(s);
++    if (hi - lo < 1e-3f)
++        hi = lo + 1e-3f;
++    sc = 255.0f / (hi - lo);
++    for (uint32_t i = 0; i < npix; i++) {
++        float v = (src[i] - lo) * sc;
++        out8[i] = (uint8_t)(v <= 0.0f ? 0 : v >= 255.0f ? 255 : (int)v);
++    }
++    return 0;
++}
++
++/* CLAHE（OpenCV 算法：分块直方图裁剪+均匀再分配、LUT、双线性插值）。
++ * 要求 w、h 可被 tiles 整除（80x64 / 4 成立），否则不处理。原地。 */
++static void ridge_clahe(uint8_t *img, int w, int h, float clip, int tiles)
++{
++    int tw, th, total, limit;
++    float lut_scale, inv_tw, inv_th;
++    uint8_t *lut;
++
++    if (clip <= 0.0f || tiles < 1 || w % tiles || h % tiles)
++        return;
++    tw = w / tiles;
++    th = h / tiles;
++    total = tw * th;
++    lut_scale = 255.0f / (float)total;
++    limit = (int)(clip * total / 256);
++    if (limit < 1)
++        limit = 1;
++    lut = malloc((size_t)tiles * tiles * 256);
++    if (!lut)
++        return;
++    for (int ty = 0; ty < tiles; ty++)
++        for (int tx = 0; tx < tiles; tx++) {
++            int hist[256] = { 0 };
++            int clipped = 0, batch, residual, sum = 0;
++            uint8_t *l = &lut[(ty * tiles + tx) * 256];
++
++            for (int y = ty * th; y < (ty + 1) * th; y++)
++                for (int x = tx * tw; x < (tx + 1) * tw; x++)
++                    hist[img[y * w + x]]++;
++            for (int i = 0; i < 256; i++)
++                if (hist[i] > limit) {
++                    clipped += hist[i] - limit;
++                    hist[i] = limit;
++                }
++            batch = clipped / 256;
++            residual = clipped - batch * 256;
++            for (int i = 0; i < 256; i++)
++                hist[i] += batch;
++            if (residual) {
++                int step = 256 / residual > 1 ? 256 / residual : 1;
++                for (int i = 0; i < 256 && residual > 0; i += step, residual--)
++                    hist[i]++;
++            }
++            for (int i = 0; i < 256; i++) {
++                int v;
++                sum += hist[i];
++                v = (int)lrintf((float)sum * lut_scale);
++                l[i] = (uint8_t)(v > 255 ? 255 : v);
++            }
++        }
++    inv_tw = 1.0f / (float)tw;
++    inv_th = 1.0f / (float)th;
++    for (int y = 0; y < h; y++) {
++        float tyf = (float)y * inv_th - 0.5f;
++        int ty1 = (int)floorf(tyf), ty2 = ty1 + 1;
++        float ya = tyf - (float)ty1;
++        ty1 = ty1 < 0 ? 0 : ty1;
++        ty2 = ty2 > tiles - 1 ? tiles - 1 : ty2;
++        for (int x = 0; x < w; x++) {
++            float txf = (float)x * inv_tw - 0.5f;
++            int tx1 = (int)floorf(txf), tx2 = tx1 + 1;
++            float xa = txf - (float)tx1;
++            uint8_t s = img[y * w + x];
++            float res;
++            int v;
++            tx1 = tx1 < 0 ? 0 : tx1;
++            tx2 = tx2 > tiles - 1 ? tiles - 1 : tx2;
++            res = ((float)lut[(ty1 * tiles + tx1) * 256 + s] * (1.0f - xa) +
++                   (float)lut[(ty1 * tiles + tx2) * 256 + s] * xa) * (1.0f - ya) +
++                  ((float)lut[(ty2 * tiles + tx1) * 256 + s] * (1.0f - xa) +
++                   (float)lut[(ty2 * tiles + tx2) * 256 + s] * xa) * ya;
++            v = (int)lrintf(res);
++            img[y * w + x] = (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v);
++        }
++    }
++    free(lut);
++}
++
++int gx_imgproc_signal(const struct goodix_dev *d,
++                      const struct gx_imgproc_params *p,
++                      const uint8_t *img16, struct gx_imgproc_signal *out)
++{
++    const uint8_t *base = select_base(d, p);
++    uint32_t npix = (uint32_t)d->img_w * d->img_h;
++    float *buf;
++    double s = 0.0, s2 = 0.0;
++
++    if (!base || !npix || !out)
++        return -1;
++    buf = malloc(npix * sizeof(float));
++    if (!buf)
++        return -1;
++    ridge_diff(img16, base, npix, 0, buf);
++    for (uint32_t i = 0; i < npix; i++)
++        s += buf[i];
++    out->dc = (float)(s / npix);
++    if (ridge_dog(buf, buf, d->img_w, d->img_h, p->dog_s1, p->dog_s2) != 0) {
++        free(buf);
++        return -1;
++    }
++    s = 0.0;
++    for (uint32_t i = 0; i < npix; i++) {
++        s += buf[i];
++        s2 += (double)buf[i] * buf[i];
++    }
++    s /= npix;
++    out->ridge = (float)sqrt(s2 / npix - s * s);
++    free(buf);
++    return 0;
++}
++
++/* RIDGE 管线主体。返回 0 成功；-1 无基线/分配失败（调用方回退 legacy）。 */
++static int ridge_to8bit(const struct goodix_dev *d,
++                        const struct gx_imgproc_params *p,
++                        const uint8_t *img16, uint8_t *out8)
++{
++    const uint8_t *base = select_base(d, p);
++    uint32_t npix = (uint32_t)d->img_w * d->img_h;
++    float *buf;
++    int r = -1;
++
++    if (!base)
++        return -1;
++    buf = malloc(npix * sizeof(float));
++    if (!buf)
++        return -1;
++    ridge_diff(img16, base, npix, p->deghost, buf);
++    if (ridge_dog(buf, buf, d->img_w, d->img_h, p->dog_s1, p->dog_s2) == 0 &&
++        ridge_stretch(buf, out8, npix, p->pct_lo, p->pct_hi) == 0) {
++        ridge_clahe(out8, d->img_w, d->img_h, p->clahe_clip, p->clahe_tiles);
++        r = 0;
++    }
++    free(buf);
++    return r;
++}
++
+ /* ---- 逐级调试 dump（GOODIX_DUMP_IMGPROC=1）----
+  * 序号用 static 计数器：仅调试路径使用，非线程安全可接受。 */
+ static uint32_t imgproc_seq;
+@@ -303,6 +600,37 @@
+     free(tmp);
+ }
+ 
++/* 16bit 原样 dump：PGM P5 maxval 4095，像素大端（PGM 规范） */
++static void dump_pgm16raw(const char *stage, uint32_t seq,
++                          uint32_t w, uint32_t h, const uint8_t *img16le)
++{
++    char path[512];
++    FILE *f;
++
++    gx_state_dir_ensure();
++    snprintf(path, sizeof(path), "%s/imgproc-%06u-%s.pgm",
++             gx_state_dir(), seq, stage);
++    f = fopen(path, "wb");
++    if (!f)
++        return;
++    fprintf(f, "P5\n%u %u\n%u\n", w, h, IMGPROC_PX_MAX);
++    for (uint32_t i = 0; i < w * h; i++) {
++        uint16_t v = imgproc_px16(img16le, i);
++        fputc(v >> 8, f);
++        fputc(v & 0xFF, f);
++    }
++    fclose(f);
++}
++
++void gx_imgproc_dump16(const struct goodix_dev *d, const char *stage,
++                       const uint8_t *img16)
++{
++    if (!d || !img16 || !getenv("GOODIX_DUMP_IMGPROC"))
++        return;
++    dump_pgm16raw(stage, imgproc_seq, d->img_w, d->img_h, img16);
++    LOG("imgproc: dumped %s (seq %u)", stage, imgproc_seq);
++}
++
+ /* ---- 公共入口 ---- */
+ int gx_imgproc_to8bit(const struct goodix_dev *d,
+                       const struct gx_imgproc_params *p,
+@@ -328,6 +656,27 @@
+ 
+     do_dump = getenv("GOODIX_DUMP_IMGPROC") != NULL;
+ 
++    /* 标定：16bit 原帧 + 两种基线原样落盘，离线可复现任意管线 */
++    if (do_dump) {
++        struct gx_imgproc_signal sig;
++        dump_pgm16raw("raw16", imgproc_seq, w, h, img16);
++        if (d->img_base_valid)
++            dump_pgm16raw("base16", imgproc_seq, w, h, d->img_base);
++        if (d->img_fresh_valid)
++            dump_pgm16raw("fresh16", imgproc_seq, w, h, d->img_fresh);
++        if (gx_imgproc_signal(d, p, img16, &sig) == 0)
++            LOG("imgproc: seq %u signal dc=%.0f ridge=%.1f (%s base)",
++                imgproc_seq, sig.dc, sig.ridge,
++                p->fresh_base && d->img_fresh_valid ? "fresh" : "stored");
++    }
++
++    if (p->mode == GX_IMGPROC_MODE_RIDGE && ridge_to8bit(d, p, img16, out8) == 0) {
++        if (do_dump)
++            dump_pgm_u8("ridge8", imgproc_seq, w, h, out8);
++        imgproc_seq++;
++        return 0;
++    }
++
+     buf = malloc((size_t)npix * sizeof(uint16_t));
+     if (!buf)
+         return -1;
+@@ -414,4 +763,40 @@
+         if (f > 0.0f)
+             p->enhance_sigma = f;
+     }
++    if ((e = getenv("GOODIX_IMGPROC_MODE"))) {
++        if (!strcmp(e, "ridge"))
++            p->mode = GX_IMGPROC_MODE_RIDGE;
++        else if (!strcmp(e, "legacy"))
++            p->mode = GX_IMGPROC_MODE_LEGACY;
++    }
++    if ((e = getenv("GOODIX_IMGPROC_FRESH_BASE"))) {
++        v = atoi(e);
++        if (v == 0 || v == 1)
++            p->fresh_base = (uint8_t)v;
++    }
++    if ((e = getenv("GOODIX_IMGPROC_DEGHOST"))) {
++        v = atoi(e);
++        if (v == 0 || v == 1)
++            p->deghost = (uint8_t)v;
++    }
++    if ((e = getenv("GOODIX_IMGPROC_DOG_S1"))) {
++        float f = (float)atof(e);
++        if (f > 0.0f)
++            p->dog_s1 = f;
++    }
++    if ((e = getenv("GOODIX_IMGPROC_DOG_S2"))) {
++        float f = (float)atof(e);
++        if (f > 0.0f)
++            p->dog_s2 = f;
++    }
++    if ((e = getenv("GOODIX_IMGPROC_CLAHE"))) {
++        float f = (float)atof(e);
++        if (f >= 0.0f)
++            p->clahe_clip = f;
++    }
++    if ((e = getenv("GOODIX_IMGPROC_CLAHE_TILES"))) {
++        v = atoi(e);
++        if (v > 0 && v <= 16)
++            p->clahe_tiles = (uint8_t)v;
++    }
+ }
+--- a/drivers/goodixgf/core/goodix_imgproc.h
++++ b/drivers/goodixgf/core/goodix_imgproc.h
+@@ -26,6 +26,13 @@
+     GX_IMGPROC_ENHANCE_SIGFM,        /* 反锐化：out = in + boost*(in - gauss(in,σ)) */
+ };
+ 
++/* 管线模式 */
++enum gx_imgproc_mode {
++    GX_IMGPROC_MODE_LEGACY = 0,      /* baseline/flatfield/stretch/enhance（原管线） */
++    GX_IMGPROC_MODE_RIDGE,           /* 脊带通：baseline -> [去鬼影] -> DoG 带通
++                                      * -> 百分位拉伸 -> CLAHE（浮点，无 4095 截断） */
++};
++
+ /* 处理参数。默认值见 GX_IMGPROC_DEFAULT_PARAMS。 */
+ struct gx_imgproc_params {
+     uint8_t  baseline;          /* 1: 减无手指基线（d->img_base）；0: 用原帧 */
+@@ -37,16 +44,46 @@
+     uint8_t  enhance;           /* GX_IMGPROC_ENHANCE_* */
+     float    enhance_boost;     /* 反锐化增益（默认 0.8） */
+     float    enhance_sigma;     /* 反锐化高斯 σ（默认 1.5，像素） */
++    /* ---- GX_IMGPROC_MODE_RIDGE ---- */
++    uint8_t  mode;              /* GX_IMGPROC_MODE_* */
++    uint8_t  fresh_base;        /* 1: 有 d->img_fresh 时用它代替 d->img_base 做差 */
++    uint8_t  deghost;           /* 1: 回归去除与基线同形的增益残影（见 .c） */
++    float    dog_s1, dog_s2;    /* DoG 带通 σ（默认 1.0 / 4.0 像素，脊距 ~8-10px） */
++    float    clahe_clip;        /* CLAHE 裁剪上限（默认 2.5；<=0 关闭） */
++    uint8_t  clahe_tiles;       /* CLAHE 每轴分块数（默认 4 -> 80x64 为 20x16 块） */
+ };
+ 
+ #define GX_IMGPROC_DEFAULT_PARAMS \
+-    { 1, 2048, 1, 12, 1, 99, GX_IMGPROC_ENHANCE_NONE, 0.8f, 1.5f }
+-/* SIGFM 驱动路径默认：开启反锐化局部对比增强。小图（80x64）弱按压下
+- * SIFT 关键点少且不可复现，增强提升脊谷对比度与关键点密度/可复现性，
+- * 缓解注册/验证间歇性 no-match；几何一致性投票可过滤增强引入的噪点。
++    { 1, 2048, 1, 12, 1, 99, GX_IMGPROC_ENHANCE_NONE, 0.8f, 1.5f, \
++      GX_IMGPROC_MODE_LEGACY, 0, 0, 1.0f, 4.0f, 2.5f, 4 }
++/* SIGFM 驱动路径默认：RIDGE 管线 + 新鲜基线 + 去鬼影。原 legacy 路径
++ * （平场+拉伸+反锐化）在弱按压下把像素网格残影拉满整幅图，SIFT 关键点
++ * 落在残影上，导致不同手指高分互配（实测冒认得分 2000-13000）。
++ * legacy 字段保留供 GOODIX_IMGPROC_MODE=legacy 回退。
+  * 环境变量（GOODIX_IMGPROC_*）可覆盖，改参数后须重新 enroll。 */
+ #define GX_IMGPROC_SIGFM_PARAMS \
+-    { 1, 2048, 1, 12, 1, 99, GX_IMGPROC_ENHANCE_SIGFM, 0.8f, 1.5f }
++    { 1, 2048, 1, 12, 1, 99, GX_IMGPROC_ENHANCE_SIGFM, 0.8f, 1.5f, \
++      GX_IMGPROC_MODE_RIDGE, 1, 1, 1.0f, 4.0f, 2.5f, 4 }
++
++/* 帧信号统计（主机侧质量门限/标定日志用），均以 12bit 原始计数为单位：
++ *   dc    = mean(raw - base)：手指整体压低读数（实测满按 ~ -1200）
++ *   ridge = DoG 带通后 (raw - base) 的标准差：脊谷对比度（空帧/弱触 ≈ 噪声） */
++struct gx_imgproc_signal {
++    float dc;
++    float ridge;
++};
++
++/* 计算 img16 相对基线（按 p->fresh_base 选择 img_fresh/img_base）的信号统计。
++ * 无可用基线返回 -1。 */
++int gx_imgproc_signal(const struct goodix_dev *d,
++                      const struct gx_imgproc_params *p,
++                      const uint8_t *img16, struct gx_imgproc_signal *out);
++
++/* 标定 dump：GOODIX_DUMP_IMGPROC=1 时把 16bit 帧原样写成
++ * imgproc-<seq>-<stage>.pgm（P5 maxval 4095，大端），seq 为下一帧序号。
++ * 用于离线复现整条管线（raw16/base16/pre16）。 */
++void gx_imgproc_dump16(const struct goodix_dev *d, const char *stage,
++                       const uint8_t *img16);
+ 
+ /* 主入口：按参数处理。img16 为 w*h*2 字节 16bit LE 帧，out8 为 w*h 字节。
+  * 返回 0 成功；-1 参数非法（w/h 越界、半径<0、百分位非法）。
+@@ -63,6 +100,10 @@
+  *   GOODIX_IMGPROC_PCT_LO=<int>  GOODIX_IMGPROC_PCT_HI=<int>
+  *   GOODIX_IMGPROC_ENHANCE=none|sigfm
+  *   GOODIX_IMGPROC_BOOST=<float>  GOODIX_IMGPROC_SIGMA=<float>
++ *   GOODIX_IMGPROC_MODE=legacy|ridge
++ *   GOODIX_IMGPROC_FRESH_BASE=0|1  GOODIX_IMGPROC_DEGHOST=0|1
++ *   GOODIX_IMGPROC_DOG_S1=<float>  GOODIX_IMGPROC_DOG_S2=<float>
++ *   GOODIX_IMGPROC_CLAHE=<float>   GOODIX_IMGPROC_CLAHE_TILES=<int>
+  * 非法取值静默忽略。 */
+ void gx_imgproc_apply_env(struct gx_imgproc_params *p);
+ 
+--- a/drivers/goodixgf/core/goodix.h
++++ b/drivers/goodixgf/core/goodix.h
+@@ -173,6 +173,13 @@
+     uint8_t img_base[GF_IMG_MAX];
+     bool img_base_valid;    /* 基线图像可用（文件加载或 init 采样成功） */
+ 
++    /* 新鲜无手指帧：布防 FDT down 前直接曝光采一帧（默认开启，
++     * GOODIX_IMGPROC_FRESH_BASE=0 关闭），与手指帧时间上紧邻，消除基线
++     * 漂移。通过合理性检查（相对 img_base 的整体压低量不像手指）才置 valid。 */
++    uint8_t img_fresh[GF_IMG_MAX];
++    bool img_fresh_valid;
++    bool fresh_broken;      /* 本次 open 内新鲜帧超时过：不再请求，回退存档基线 */
++
+     /* TLS 解密数据聚合缓冲（goodix_capture.c 的混合通道：B0 帧解密后的
+      * 字节流先攒出完整 payload 再分流）。放设备结构里而不是文件级 static，
+      * 保证多设备实例/重入安全。 */
+@@ -274,6 +281,12 @@
+  * 存入 d->img_base（不进 FDT 判别循环）。
+  * 成功返回 0 且 d->img_base_valid=true。 */
+ int gx_capture_base_image(struct goodix_dev *d);
++/* 新鲜无手指帧：同上直接曝光，存入 d->img_fresh（不动 img_base/goodix.dat）。
++ * 采集期间屏蔽事件回调。相对上一可信新鲜帧（无则存档基线）的整体压低量
++ * 超过 GOODIX_FRESH_MAXDC（默认 300 计数，满按手指 ~1200）视为手指在上并
++ * 丢弃，保留上一可信新鲜帧；尚无新鲜帧时若带通对比度 < GOODIX_FRESH_MAXRIDGE
++ * （默认 12）则判为存档基线漂移而采用。返回 0=采用，1=丢弃，<0 失败。 */
++int gx_capture_fresh_image(struct goodix_dev *d);
+ /* 主机侧手指判别——新帧与无手指基线图像做分块统计比较。
+  * img 为解包后的 16bit LE 帧（w*h*2 字节）。
+  * 返回：1=手指按下（接受），2=空触发，3=坏帧，
+--- a/drivers/goodixgf/goodixgf.c
++++ b/drivers/goodixgf/goodixgf.c
+@@ -53,13 +53,22 @@
+  *   可采，采满 GF_ENROLL_MIN_STAGES 后即以当前帧为收尾帧提前完成。
+  *   下限保证基本覆盖，上限封顶避免无休止采集（基类 nr_enroll_stages 的
+  *   初值设为 GF_ENROLL_MAX_STAGES，收敛后运行期下调）。 */
+-#define GF_ENROLL_MIN_STAGES  3
+-#define GF_ENROLL_MAX_STAGES  8
+-#define GF_ENROLL_DUP_STOP    2
++/* 覆盖容量：80x64@500DPI 单帧 ~4.1x3.25mm，指腹压区 ~12x14mm，50% 重叠
++ * 需 ~30-60 块才能覆盖主压区（经验值 60-120 帧亦吻合）。原值 8 帧结构性
++ * 不足 -> 只有命中已采区才匹配。上调模板容量，依赖多样性检查
++ * (GF_ENROLL_MIN_DIFF) 驱动用户逐步铺满；DUP_STOP 提高避免过早收敛。 */
++#define GF_ENROLL_MIN_STAGES  15
++#define GF_ENROLL_MAX_STAGES  30
++#define GF_ENROLL_DUP_STOP    4
+ #define GF_ENROLL_NPIX   (GOODIXGF_IMG_W * GOODIXGF_IMG_H)
+ /* enroll 多样性阈值：两帧 8bit 图像的平均绝对差低于该值即判为"同一位置
+  * 重复按压"（SIFT 关键点几乎一致）。可经 GOODIX_ENROLL_MIN_DIFF 覆盖。 */
+ #define GF_ENROLL_MIN_DIFF  8.0
++/* 帧质量门限：DoG 带通后 (raw - base) 的标准差（12bit 计数，见
++ * gx_imgproc_signal）。实测满按 ~110-175、空帧/悬空 ~2-5；低于门限的
++ * 帧几乎没有脊谷对比度，交给 SIGFM 只会匹配到传感器残影，按"重试"处理
++ * 而不注册/比对。可经 GOODIX_MIN_RIDGE 覆盖（0 关闭）。 */
++#define GF_MIN_RIDGE  10.0
+ 
+ struct _FpiDeviceGoodixGF
+ {
+@@ -73,7 +82,9 @@
+    * 之后仅在采集 worker 线程访问。 */
+   gboolean          enroll;            /* 当前会话是否为 enroll */
+   int               accepted_count;    /* 已接受的 enroll 帧数 */
+-  uint8_t           accepted[GF_ENROLL_MAX_STAGES][GF_ENROLL_NPIX]; /* 已接受帧 */
++  uint8_t         (*accepted)[GF_ENROLL_NPIX]; /* 已接受帧：enroll 时堆分配
++                                                * MAX_STAGES 块（内联会超 GObject
++                                                * 实例 64KB 上限）。 */
+   gboolean          enroll_converged;  /* 空间覆盖已收敛，交付收尾帧直到完成 */
+   int               dup_streak;        /* 连续位置重复按压次数 */
+ };
+@@ -271,6 +282,28 @@
+            * 修改任何图像参数后必须 fprintd-delete 重新 enroll。 */
+           gx_imgproc_apply_env (&p);
+           gx_imgproc_to8bit (gx, &p, img, fimg->data);
++
++          /* 质量门限：脊谷对比度过低（空触发/轻触/悬空）按重试处理 */
++          {
++            struct gx_imgproc_signal sig;
++            const gchar *e = g_getenv ("GOODIX_MIN_RIDGE");
++            gdouble min_ridge = e && *e ? g_ascii_strtod (e, NULL) : GF_MIN_RIDGE;
++
++            if (gx_imgproc_signal (gx, &p, img, &sig) == 0)
++              {
++                fp_info ("frame signal dc=%.0f ridge=%.1f", sig.dc, sig.ridge);
++                if (sig.ridge < min_ridge)
++                  {
++                    fp_warn ("frame too weak (ridge %.1f < %.1f) - "
++                             "place the finger flat and try again",
++                             sig.ridge, min_ridge);
++                    gf_post (self, gf_on_retry_scan, NULL, NULL, FALSE);
++                    g_object_unref (fimg);
++                    gx_wait_finger_up (gx, 15000);
++                    continue;
++                  }
++              }
++          }
+           /* 这是一个完整的按压帧。SIGFM 使用对尺度/旋转不敏感的 SIFT
+            * 关键点；保持 FPI_IMAGE_PARTIAL 不设置，因为设置后会被裁剪
+            * 边缘特征。 */
+@@ -463,6 +496,11 @@
+   self->accepted_count = 0;
+   self->dup_streak = 0;
+   self->enroll_converged = FALSE;
++  /* 多样性检查用的已接受帧缓冲放堆上（MAX_STAGES x NPIX 会超 GObject 实例
++   * 64KB 上限）；仅 enroll 会话需要。 */
++  g_clear_pointer (&self->accepted, g_free);
++  if (self->enroll)
++    self->accepted = g_malloc0 ((gsize) GF_ENROLL_MAX_STAGES * GF_ENROLL_NPIX);
+   /* nr_enroll_stages 是实例字段，可能在上次 enroll 收敛时被运行期下调，
+    * 每次会话开始复位到上限，保证动态采样有完整的收敛空间。gf_activate
+    * 运行于主上下文，此处调用 setter 安全。 */
+@@ -481,6 +519,7 @@
+   if (self->gx)
+     gx_capture_cancel (self->gx);
+   g_clear_pointer (&self->worker, g_thread_join);
++  g_clear_pointer (&self->accepted, g_free);
+   fpi_image_device_deactivate_complete (dev, NULL);
+ }
+ 
+diff --git a/libfprint/sigfm/sigfm.cpp b/libfprint/sigfm/sigfm.cpp
+index 1ade7b3..3c73443 100644
+--- a/libfprint/sigfm/sigfm.cpp
++++ b/libfprint/sigfm/sigfm.cpp
+@@ -64,6 +64,15 @@ constexpr auto distance_match = 0.75;
+ constexpr auto length_match = 0.05;
+ constexpr auto angle_match = 0.05;
+ constexpr auto min_match = 5;
++// Correspondences whose two keypoints sit at (almost) the same sensor pixel
++// are discarded. Sensor fixed-pattern artefacts (per-pixel/column gain and
++// offset residue left after baseline subtraction) are locked to the pixel
++// grid, so they show up in every frame at identical coordinates and match
++// each other across *different* fingers with a perfectly consistent
++// geometry: on small area sensors this produced huge scores for impostor
++// frames. Two real impressions of a finger are never placed with sub-pixel
++// accuracy, so real ridge correspondences always carry some displacement.
++constexpr auto min_displacement = 2.0;
+ struct match {
+     cv::Point2i p1;
+     cv::Point2i p2;
+@@ -73,10 +82,12 @@ struct match {
+     {
+         return std::tie(this->p1, this->p2) == std::tie(right.p1, right.p2);
+     }
++    // Full lexicographic order: comparing p1.y alone made std::set treat
++    // every match sharing a row as a duplicate and silently drop it.
+     bool operator<(const match& right) const
+     {
+-        return (this->p1.y < right.p1.y) ||
+-               ((this->p1.y < right.p1.y) && this->p1.x < right.p1.x);
++        return std::tie(p1.y, p1.x, p2.y, p2.x) <
++               std::tie(right.p1.y, right.p1.x, right.p2.y, right.p2.x);
+     }
+ };
+ struct angle {
+@@ -143,9 +154,11 @@ int sigfm_match_score(SigfmImgInfo* frame, SigfmImgInfo* enrolled)
+             }
+             const cv::DMatch& match_1 = pts.at(0);
+             if (match_1.distance < distance_match * pts.at(1).distance) {
+-                matches_unique.emplace(
+-                    match{frame->keypoints.at(match_1.queryIdx).pt,
+-                          enrolled->keypoints.at(match_1.trainIdx).pt});
++                const cv::Point2f& kp1 = frame->keypoints.at(match_1.queryIdx).pt;
++                const cv::Point2f& kp2 = enrolled->keypoints.at(match_1.trainIdx).pt;
++                if (cv::norm(kp1 - kp2) <= min_displacement)
++                    continue;
++                matches_unique.emplace(match{kp1, kp2});
+                 nb_matched++;
+             }
+         }

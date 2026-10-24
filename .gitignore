@@ -17,3 +17,7 @@ goodix-fp-dump/
 tools/.venv/
 __pycache__/
 *.pyc
+# banco di tuning: binari compilati da build.sh
+tools/fp_tune/sigfm_test
+tools/fp_tune/imgproc_run
+tools/fp_tune/libsigfm_prod.so
