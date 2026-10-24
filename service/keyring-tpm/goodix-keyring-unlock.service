@@ -1,0 +1,9 @@
+[Unit]
+Description=Sblocco keyring GNOME via TPM (PCR 7)
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/share/goodixfp/keyring-unlock.sh
+
+[Install]
+WantedBy=default.target
