@@ -1,6 +1,16 @@
 #!/bin/sh
-# Avvisa se nei repo c'e' una libfprint upstream piu' recente di quella su cui
-# e' costruito libfprint-goodixgf (lanciato dall'hook di pacman, sola lettura).
+# Lanciato dall'hook di pacman dopo ogni transazione (sola lettura).
+#  1. la libreria si carica ancora? Una dipendenza (opencv, mbedtls, ...)
+#     aggiornata a una versione incompatibile la lascia senza le sue .so;
+#  2. nei repo c'e' una libfprint upstream piu' recente?
+lib=/usr/lib/libfprint-2.so.2.0.0
+missing=$(ldd "$lib" 2>/dev/null | awk '/not found/ {printf "%s ", $1}')
+if [ -n "$missing" ]; then
+  echo "!! libfprint-goodixgf non si carica piu': mancano $missing"
+  echo "   Una dipendenza ha cambiato versione: il lettore e' fermo, la password funziona."
+  echo "   Ricompila dalla cartella del progetto:  packaging/goodixgf-update"
+fi
+
 repo=$(LC_ALL=C pacman -Si libfprint 2>/dev/null | awk '/^Version/ {print $3; exit}' | cut -d- -f1)
 inst=$(LC_ALL=C pacman -Q libfprint-goodixgf 2>/dev/null | awk '{print $2}' | cut -d- -f1)
 [ -n "$repo" ] && [ -n "$inst" ] || exit 0

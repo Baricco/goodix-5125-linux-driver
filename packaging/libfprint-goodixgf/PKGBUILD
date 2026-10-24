@@ -10,7 +10,7 @@
 pkgname=libfprint-goodixgf
 _upstream=1.94.100
 pkgver=${_upstream}
-pkgrel=1
+pkgrel=2
 pkgdesc="Library for fingerprint readers, with SIGFM and the goodixgf driver (Goodix 27c6:5125/5135)"
 url="https://fprint.freedesktop.org/"
 arch=(x86_64)
@@ -74,7 +74,7 @@ sha256sums=('18fcee9ffb2adb9ba2ea229850e9266d0bcad2df5fad556beffce6c8ba84f192'
             '7f335405ad0fddca9571299cb95b1f4f67770c8e2388b8f583959bbb0b101aed'
             'a71dff855a4b045cd49537d34bcb0de779141c0d49a604523ee6e78b31e7b98f'
             '94fcceeb3b73568501e3eaa30d6e3eeedba7dc8f77d0db921223f18b69526c66'
-            'bcb055fa2be5632648b182ac90c9f1df990da74d1165524f5f82e0806aa1d0fe'
+            '37cac32710afdcde48b5e0f3d85de7d86479b7a80edba88209aae8bc8f27797d'
             '6f98735261372a4bf7e7b97026dfe2b70610673b57e1cb3f3aacfbec61cd4652'
             '30c92d93a0a6dad4118785a51cf3e659f8cafb12e2afec6c268b1fabc47fb7d9'
             'c2effd370f860455bd446a5507afca372887ac6765f54d3a925ac7119deeb644'

@@ -4,6 +4,9 @@
 #   packaging/goodixgf-update            aggiorna se serve, poi makepkg -si
 #   packaging/goodixgf-update --force    ricompila anche se la versione e' la stessa
 #
+# Ricompila da solo anche quando la libreria installata non si carica piu'
+# (una dipendenza come opencv o mbedtls e' passata a una versione incompatibile).
+#
 # Porta _upstream del PKGBUILD alla versione dei repo, ricalcola i checksum e
 # riapplica le stesse patch. Se una patch non si applica piu' la build si ferma
 # e resta installata la versione attuale (il lettore continua a funzionare).
@@ -29,7 +32,8 @@ s = re.sub(r"sha256sums=\([^)]*\)", sys.argv[1], s, count=1)
 open(p, 'w').write(s)
 EOF
   )
-elif [ "${1:-}" != "--force" ] && [ -n "$inst" ] && [ "$(vercmp "$cur" "$inst")" -le 0 ]; then
+elif [ "${1:-}" != "--force" ] && [ -n "$inst" ] && [ "$(vercmp "$cur" "$inst")" -le 0 ] &&
+     ! ldd /usr/lib/libfprint-2.so.2.0.0 | grep -q "not found"; then
   echo "gia' aggiornato."
   exit 0
 fi

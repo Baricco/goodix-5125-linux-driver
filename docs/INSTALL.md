@@ -183,6 +183,22 @@ non si applica più, la build si ferma e **resta installata la versione
 precedente**: il lettore continua a funzionare finché le patch non vengono
 aggiornate in questo repository.
 
+Cosa fa `pacman -Syu` / `paru -Syu` con il pacchetto installato:
+
+- **non lo tocca**: non è in nessun repository né su AUR, e nessun pacchetto
+  lo sostituisce. fprintd e pam_fprintd vedono soddisfatta la dipendenza da
+  `libfprint`;
+- **la libfprint nuova dei repo non viene installata da sola**: l'hook la
+  segnala e la prendi con `goodixgf-update` quando vuoi;
+- **unico caso da ricompilare**: se un aggiornamento porta OpenCV o mbedtls a
+  una versione con librerie incompatibili, la nostra libreria non si carica
+  più. Il lettore si ferma, ma sudo e il login chiedono la password come
+  sempre. L'hook lo rileva subito:
+  ```
+  !! libfprint-goodixgf non si carica piu': mancano libopencv_core.so.500
+  ```
+  e `packaging/goodixgf-update` la ricompila contro le versioni nuove.
+
 ## 8. Disinstallare
 
 ```sh
