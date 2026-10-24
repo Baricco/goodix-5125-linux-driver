@@ -14,7 +14,16 @@ Il pacchetto installa anche:
 - `goodixgf-warmup.service` — cancella la baseline al boot, così il driver la
   ricampiona a freddo;
 - un drop-in di fprintd con `--no-timeout`, per tenere fprintd residente;
-- un hook di pacman che avvisa quando nei repo esce una libfprint più nuova.
+- un hook di pacman che avvisa quando nei repo esce una libfprint diversa da
+  quella a cui il pacchetto è allineato (nuova versione o nuovo pkgrel, cioè
+  correzioni della distribuzione) e quando la libreria non si carica più.
+
+`goodixgf-update` segue il pacchetto libfprint della distribuzione: sulla
+versione upstream (`_upstream`) applica prima le correzioni del PKGBUILD
+ufficiale Arch per quel pkgrel (`_distro_patches`, `_distro_cherrypicks`,
+lette dal testo del PKGBUILD senza eseguirlo), poi le nostre patch.
+`_distrover` registra la versione della distribuzione di riferimento ed è
+installata in `/usr/share/libfprint-goodixgf/base-version`.
 
 ## Uso
 

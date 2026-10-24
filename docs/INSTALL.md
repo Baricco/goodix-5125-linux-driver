@@ -199,6 +199,45 @@ Cosa fa `pacman -Syu` / `paru -Syu` con il pacchetto installato:
   ```
   e `packaging/goodixgf-update` la ricompila contro le versioni nuove.
 
+### Correzioni di sicurezza
+
+Una correzione a libfprint arriva in due modi, ed entrambi vengono seguiti:
+
+- **nuova versione upstream** (es. 1.94.101): `goodixgf-update` ricostruisce
+  sulla nuova versione;
+- **correzione della distribuzione sulla stessa versione** (nuovo `pkgrel`,
+  es. 1.94.100-2): Arch la applica con un file patch o con
+  `git cherry-pick` nel PKGBUILD. `goodixgf-update` legge il PKGBUILD ufficiale
+  di quella versione come testo (senza eseguirlo), prende patch e commit e li
+  applica prima delle nostre.
+
+In entrambi i casi l'hook avvisa alla fine del `pacman -Syu` in cui arriva la
+correzione, e l'allineamento richiede circa un minuto.
+
+Se le nostre patch non si applicano sopra la correzione (succede solo se tocca
+lo stesso codice), la build si ferma. Puoi allora passare subito alla libfprint
+ufficiale già corretta:
+
+```sh
+sudo pacman -S libfprint      # rimuove libfprint-goodixgf: impronta ferma, password ok
+```
+
+finché le patch non vengono aggiornate, poi reinstalli con
+`packaging/goodixgf-update`. Non resti mai bloccato su una versione
+vulnerabile.
+
+Nota: `arch-audit` e il security tracker di Arch conoscono solo il nome
+`libfprint`, non `libfprint-goodixgf`. Il controllo dell'hook copre proprio
+questo, perché segue la versione del pacchetto ufficiale.
+
+**Superficie d'attacco.** libfprint non è esposta in rete. Gira dentro fprintd,
+che è attivabile via D-Bus con autorizzazione polkit. I suoi input sono i
+dispositivi USB collegati e le impronte salvate in `/var/lib/fprint/` (scrivibili
+solo da root). Il codice più specifico, e quindi più a rischio, è il nostro:
+driver goodixgf (protocollo USB e TLS) e matcher SIGFM. Il bug più grave
+trovato finora, le dita sbagliate accettate, stava proprio lì ed è stato
+corretto (`docs/how-it-works.md`).
+
 ## 8. Disinstallare
 
 ```sh

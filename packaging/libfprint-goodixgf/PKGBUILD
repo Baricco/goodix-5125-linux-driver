@@ -9,8 +9,15 @@
 
 pkgname=libfprint-goodixgf
 _upstream=1.94.100
+# Versione del pacchetto libfprint della distribuzione a cui e' allineato
+# (pkgver-pkgrel dei repo) e correzioni del PKGBUILD ufficiale Arch per
+# quella versione (file patch e commit upstream presi con git cherry-pick):
+# li gestisce ../goodixgf-update e si applicano prima delle nostre patch.
+_distrover=1.94.100-1.1
+_distro_patches=()
+_distro_cherrypicks=()
 pkgver=${_upstream}
-pkgrel=2
+pkgrel=3
 pkgdesc="Library for fingerprint readers, with SIGFM and the goodixgf driver (Goodix 27c6:5125/5135)"
 url="https://fprint.freedesktop.org/"
 arch=(x86_64)
@@ -49,6 +56,7 @@ source=("git+https://gitlab.freedesktop.org/libfprint/libfprint.git#tag=v${_upst
         fprintd-goodixgf.conf
         libfprint-goodixgf.hook
         libfprint-goodixgf-check
+        "${_distro_patches[@]}"
         0001-feat-add-basics-of-sigfm-impl.patch
         0002-chore-improve-docs-on-sigfm-and-cleanup.patch
         0003-fix-loose-constraints-on-stream-ser-de.patch
@@ -74,7 +82,7 @@ sha256sums=('18fcee9ffb2adb9ba2ea229850e9266d0bcad2df5fad556beffce6c8ba84f192'
             '7f335405ad0fddca9571299cb95b1f4f67770c8e2388b8f583959bbb0b101aed'
             'a71dff855a4b045cd49537d34bcb0de779141c0d49a604523ee6e78b31e7b98f'
             '94fcceeb3b73568501e3eaa30d6e3eeedba7dc8f77d0db921223f18b69526c66'
-            '37cac32710afdcde48b5e0f3d85de7d86479b7a80edba88209aae8bc8f27797d'
+            '5f4b4c79cb3c95da54eaef1fc91d952735b8e9470c5c01fd74aaf94f7a574850'
             '6f98735261372a4bf7e7b97026dfe2b70610673b57e1cb3f3aacfbec61cd4652'
             '30c92d93a0a6dad4118785a51cf3e659f8cafb12e2afec6c268b1fabc47fb7d9'
             'c2effd370f860455bd446a5507afca372887ac6765f54d3a925ac7119deeb644'
@@ -99,7 +107,11 @@ sha256sums=('18fcee9ffb2adb9ba2ea229850e9266d0bcad2df5fad556beffce6c8ba84f192'
 
 prepare() {
   cd libfprint
-  local p
+  local c p
+  for c in "${_distro_cherrypicks[@]}"; do
+    echo "  -> cherry-pick distribuzione $c"
+    git cherry-pick -n "$c"
+  done
   for p in "${source[@]}"; do
     [[ $p == *.patch ]] || continue
     echo "  -> $p"
@@ -131,6 +143,7 @@ package() {
     "$pkgdir/usr/share/libalpm/hooks/libfprint-goodixgf.hook"
   install -Dm755 libfprint-goodixgf-check \
     "$pkgdir/usr/share/libfprint-goodixgf/libfprint-goodixgf-check"
+  echo "$_distrover" > "$pkgdir/usr/share/libfprint-goodixgf/base-version"
 }
 
 # vim:set sw=2 sts=-1 et:
