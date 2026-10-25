@@ -1,0 +1,41 @@
+From c7716223040e3c3fdda7cde3d3df52742ab022e9 Mon Sep 17 00:00:00 2001
+From: Baricco <38298051+Baricco@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 12:52:35 +0100
+Subject: [PATCH 1/2] sigfm: fix match ordering dropping valid correspondences
+
+match::operator< compared only p1.y (its second clause repeated the
+first condition), so std::set kept a single correspondence per keypoint
+row and silently discarded the others. Use a full lexicographic order on
+(p1, p2), consistent with operator==.
+
+More correspondences survive, so scores of genuine pairs go up; thresholds
+tuned on the old behaviour may need a second look.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libfprint/sigfm/sigfm.cpp | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/libfprint/sigfm/sigfm.cpp b/libfprint/sigfm/sigfm.cpp
+index 175209b9..c8649aea 100644
+--- a/libfprint/sigfm/sigfm.cpp
++++ b/libfprint/sigfm/sigfm.cpp
+@@ -61,10 +61,13 @@ struct match {
+     {
+         return std::tie(this->p1, this->p2) == std::tie(right.p1, right.p2);
+     }
++    // Full lexicographic order, consistent with operator==: comparing p1.y
++    // alone made std::set treat every match sharing a row as a duplicate and
++    // silently drop it.
+     bool operator<(const match& right) const
+     {
+-        return (this->p1.y < right.p1.y) ||
+-               ((this->p1.y < right.p1.y) && this->p1.x < right.p1.x);
++        return std::tie(p1.y, p1.x, p2.y, p2.x) <
++               std::tie(right.p1.y, right.p1.x, right.p2.y, right.p2.x);
+     }
+ };
+ struct angle {
+-- 
+2.56.0
+
