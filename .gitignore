@@ -30,3 +30,6 @@ packaging/libfprint-goodixgf/pkg/
 packaging/libfprint-goodixgf/libfprint/
 packaging/libfprint-goodixgf/*.pkg.tar.*
 packaging/libfprint-goodixgf/*.log
+# build di goodixfpd (meson)
+goodixfpd/build*/
+goodixfpd/compile_commands.json
