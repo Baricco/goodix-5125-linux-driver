@@ -55,6 +55,6 @@ sua: non devi fare niente. Le impronte registrate restano valide.
 ## Prevenzione
 
 Il blocco profondo viene da sessioni interrotte a metà handshake (crash ripetuti
-di chi tiene aperto il sensore). Il driver `goodixgf` chiude sempre la sessione
-in modo pulito, e fprintd resta residente (`--no-timeout`) per non riaprirla a
-ogni accesso.
+di chi tiene aperto il sensore). `goodixfpd` chiude sempre la sessione in modo
+pulito (anche quando il client sparisce, come fa pam_fprintd dopo un accesso
+riuscito) e resta residente, senza riavvii a ogni accesso.

@@ -1,4 +1,9 @@
-# Matching con SIGFM: stato reale
+# Matching con SIGFM: storia del laboratorio
+
+> Questa pagina racconta come si è arrivati al matcher, nel laboratorio Python
+> (`lab/`). Il comportamento attuale, i risultati misurati e le difese sono in
+> [`how-it-works.md`](how-it-works.md); l'implementazione è in
+> `goodixfpd/src/core/goodix_sift.c` e `goodix_match.c`.
 
 Il riconoscimento usa **SIGFM** ("SIFT Is Good For Matching"), l'algoritmo di
 goodix-fp-linux-dev pensato proprio per sensori 64x80. Port fedele in `lab/sigfm.py`

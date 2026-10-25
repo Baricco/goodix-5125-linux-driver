@@ -4,17 +4,21 @@ Login con l'impronta su Linux per il lettore **Goodix `27c6:5125`** (e
 `27c6:5135`) integrato nel tasto di accensione dei portatili Huawei MateBook /
 Honor MagicBook. Si integra nello stack standard: **fprintd + pam_fprintd**,
 quindi funziona con `sudo`, greeter e blocco schermo, con la password sempre
-disponibile come alternativa.
+disponibile come alternativa. **Non modifica nessuna libreria**: libfprint e
+fprintd restano quelli della distribuzione e si aggiornano come sempre.
 
-**Stato:** funzionante e misurato sul sensore reale. 0/25 dita sbagliate
-accettate, 22/25 tocchi del dito registrato riconosciuti al primo colpo. Vedi
-[come funziona e perché è sicuro](docs/how-it-works.md).
+**Stato:** misurato sul sensore reale: 0/25 dita sbagliate accettate, 22/25
+tocchi del dito registrato riconosciuti al primo colpo. Il servizio
+`goodixfpd` dà le stesse decisioni sugli stessi frame grezzi e supera 16
+scenari contro `pam_fprintd` e i comandi `fprintd-*`; la prova dal vivo sul
+sensore è in corso. Vedi [come funziona e perché è sicuro](docs/how-it-works.md).
 
 ## Cosa contiene
 
 | | |
 |---|---|
-| [`packaging/`](packaging) | Pacchetto Arch **`libfprint-goodixgf`**: libfprint ufficiale + matcher SIGFM + driver goodixgf, con aggiornamento guidato a ogni nuova libfprint |
+| [`goodixfpd/`](goodixfpd) | **Il servizio**: parla l'interfaccia D-Bus di fprintd e gestisce il sensore (USB, TLS, immagine, confronto, impronte che migliorano con l'uso) |
+| [`packaging/`](packaging) | Pacchetto Arch **`goodixfpd`** |
 | [`gui/`](gui) | **Gestore impronte** (PySide6): registra, prova, cancella le impronte, per dito e per utente |
 | [`service/keyring-tpm/`](service/keyring-tpm) | Facoltativo: sblocco del portachiavi GNOME al login con impronta, password sigillata nel TPM |
 | [`docs/`](docs) | Guida d'installazione, BIOS, Secure Boot, recupero del sensore, funzionamento, protocollo |
@@ -24,8 +28,7 @@ accettate, 22/25 tocchi del dito registrato riconosciuti al primo colpo. Vedi
 ## Installazione rapida (Arch / CachyOS)
 
 ```sh
-cd packaging/libfprint-goodixgf && makepkg -si     # sostituisce libfprint
-sudo systemctl enable goodixgf-warmup.service
+cd packaging/goodixfpd && makepkg -si              # libfprint e fprintd restano quelli ufficiali
 fprintd-enroll -f right-index-finger               # oppure: python gui/fingerprint_manager.py
 ```
 
@@ -46,23 +49,24 @@ anti-lockout e la risoluzione dei problemi, è nella
 
 ## Sicurezza del sensore
 
-Il driver scrive nel sensore solo la propria chiave per il canale cifrato
+Il servizio scrive nel sensore solo la propria chiave per il canale cifrato
 (area PSK, reversibile). **Non contiene e non scrive mai firmware.** Il
 firmware Goodix, le DLL Windows, le catture USB e le chiavi restano fuori dal
 repository.
 
 ## Crediti
 
-- [libfprint](https://gitlab.freedesktop.org/libfprint/libfprint) e la merge
-  request SIGFM !530 (Matthieu Charette, Natasha England-Elbro, Timur Mangliev).
+- [fprintd](https://gitlab.freedesktop.org/libfprint/fprintd) — l'interfaccia
+  D-Bus che `goodixfpd` implementa (le sue descrizioni XML sono incluse).
+- SIGFM, dalla merge request libfprint !530 (Matthieu Charette, Natasha
+  England-Elbro, Timur Mangliev) — l'algoritmo di confronto, riscritto in C.
 - [Rockytkg/goodix-linux-27c6-5125](https://github.com/Rockytkg/goodix-linux-27c6-5125)
-  — driver goodixgf, base delle nostre modifiche.
+  — core del protocollo del sensore, base delle nostre modifiche.
 - [goodix-fp-linux-dev](https://github.com/goodix-fp-linux-dev) — goodix-fp-dump, SIGFM.
 - sorguido / grold (goodix-27c6-5125, LGPL-2.1) — algoritmo di provisioning PSK.
 
 ## Licenza
 
-[GPL-2.0-or-later](LICENSE). Le patch a libfprint mantengono le licenze dei
-file su cui si applicano (LGPL-2.1-or-later per libfprint e SIGFM,
-GPL-2.0-or-later per il core goodixgf). Reverse engineering a fini di
-interoperabilità su hardware proprio.
+[GPL-2.0-or-later](LICENSE), compresi il core del sensore e le descrizioni
+dell'interfaccia di fprintd. Reverse engineering a fini di interoperabilità su
+hardware proprio.

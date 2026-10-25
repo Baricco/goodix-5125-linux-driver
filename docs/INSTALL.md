@@ -8,7 +8,7 @@ Indice:
 
 1. [Requisiti](#1-requisiti)
 2. [BIOS](#2-bios)
-3. [Installare il driver](#3-installare-il-driver)
+3. [Installare il servizio](#3-installare-il-servizio)
 4. [Registrare l'impronta](#4-registrare-limpronta)
 5. [Login con l'impronta (PAM)](#5-login-con-limpronta-pam)
 6. [Sblocco del keyring via TPM (facoltativo)](#6-sblocco-del-keyring-via-tpm-facoltativo)
@@ -30,11 +30,12 @@ Come funziona il riconoscimento, e perché è sicuro: [`docs/how-it-works.md`](h
   È quello nel tasto di accensione dei portatili Huawei MateBook / Honor
   MagicBook con firmware `GF_ST411SEC_APP_125xx`. Testato su MateBook
   CREM-WXX9, firmware `12508`.
-- **Arch Linux o derivate** (CachyOS, EndeavourOS, Manjaro…): il driver si
-  installa come pacchetto pacman. Su altre distribuzioni vale la stessa serie
-  di patch (`packaging/libfprint-goodixgf/*.patch`) sopra libfprint 1.94.100,
-  ma il pacchetto va costruito col sistema della distribuzione.
-- `fprintd` e `pam_fprintd` della distribuzione (`sudo pacman -S fprintd`).
+- **`fprintd` e `pam_fprintd` della distribuzione**, così come sono
+  (`sudo pacman -S fprintd`). Il progetto non modifica né libfprint né fprintd.
+- **Arch Linux o derivate** (CachyOS, EndeavourOS, Manjaro…) per il pacchetto
+  pronto. Sulle altre distribuzioni si compila e si installa con meson
+  (vedi [più sotto](#altre-distribuzioni)): non c'è nessuna libreria da
+  sostituire, quindi gli aggiornamenti della distribuzione non lo toccano.
 - Un utente con `sudo`.
 
 ## 2. BIOS
@@ -43,46 +44,73 @@ Per l'impronta **non serve toccare il BIOS**. Le impostazioni utili alle parti
 di sicurezza facoltative (Secure Boot, TPM) e al recupero del sensore sono
 descritte in [`docs/bios.md`](bios.md).
 
-## 3. Installare il driver
+## 3. Installare il servizio
 
-Il driver è il pacchetto `libfprint-goodixgf`: la libfprint **ufficiale** della
-versione dei repository, più due cose:
-
-- **SIGFM**, il matcher per sensori piccoli, dalla merge request upstream !530;
-- il **driver `goodixgf`** per questo sensore.
-
-Il pacchetto sostituisce `libfprint` (stesse API: fprintd e pam_fprintd restano
-quelli della distribuzione) e contiene **tutti** i driver standard, quindi
-eventuali altri lettori continuano a funzionare.
+Il lettore è gestito da **`goodixfpd`**, un servizio che parla la stessa
+lingua D-Bus di fprintd (`net.reactivated.Fprint`). Un drop-in di
+`fprintd.service` avvia `goodixfpd` al posto del demone di fprintd. Per tutto
+il resto del sistema non cambia niente: `pam_fprintd`, i comandi `fprintd-*`,
+GNOME, KDE e la GUI del progetto continuano a usare "fprintd". Se il lettore
+Goodix non c'è, `goodixfpd` avvia il vero fprintd, quindi gli altri lettori
+continuano a funzionare.
 
 ```sh
 git clone <questo repository> goodix-driver
-cd goodix-driver/packaging/libfprint-goodixgf
+cd goodix-driver/packaging/goodixfpd
 makepkg -si
 ```
 
-`makepkg` scarica la libfprint ufficiale, applica le patch, compila, esegue i
-test e installa. Quando pacman chiede se rimuovere `libfprint` perché va in
-conflitto, rispondi **sì**. Poi:
+`makepkg` compila, esegue i test e installa. Poi:
 
 ```sh
-sudo systemctl enable goodixgf-warmup.service   # baseline a freddo a ogni boot
-sudo systemctl restart fprintd
-fprintd-list "$USER"                            # deve mostrare "Goodix fingerprint (27c6:5125/5135)"
+fprintd-list "$USER"     # deve citare "Goodix fingerprint (27c6:5125/5135)"
 ```
 
-**Cosa succede al primo avvio del sensore.** Il driver genera una chiave casuale
-(PSK) per il canale cifrato col sensore, la scrive nel sensore e la conserva in
-`/var/lib/fprint/goodix/psk.bin` (solo root). La scrittura tocca solo l'area
-della chiave, è reversibile e **non modifica mai il firmware**: questa build non
-contiene firmware e non lo riscrive. Se in futuro Windows riscrive la propria
-chiave (dual boot), Linux se ne accorge e rifà questa procedura da solo.
+**Se avevi il vecchio pacchetto `libfprint-goodixgf`**, prima torna alla
+libfprint della distribuzione, poi installa:
+
+```sh
+sudo pacman -S libfprint                       # rimuove libfprint-goodixgf
+cd goodix-driver/packaging/goodixfpd && makepkg -si
+```
+
+Le impronte registrate col vecchio driver non valgono più: **registrale di
+nuovo** (passo 4). Il warm-up al boot (`goodixgf-warmup.service`) non serve
+più, lo fa il servizio da solo, e l'installazione lo disattiva.
+
+**Cosa succede al primo avvio del sensore.** Il servizio genera una chiave
+casuale (PSK) per il canale cifrato col sensore, la scrive nel sensore e la
+conserva in `/var/lib/fprint/goodix/psk.bin` (solo root). La scrittura tocca
+solo l'area della chiave, è reversibile e **non modifica mai il firmware**: il
+progetto non contiene firmware e non lo riscrive. Se in futuro Windows
+riscrive la propria chiave (dual boot), Linux se ne accorge e rifà questa
+procedura da solo. Se avevi già usato il vecchio pacchetto, la chiave salvata
+viene riutilizzata.
 
 Verifica:
 ```sh
-journalctl -u fprintd -b | grep -E "goodix\].*(PSK|TLS|init complete)"
-# ... PSK valid / PSK written ...  TLS handshake done ...  === device init complete ===
+journalctl -u fprintd -b | grep -E "goodix\].*(PSK|TLS|init complete)|Sensor ready"
+# ... PSK valid ...  TLS handshake done ...  === device init complete ===  Sensor ready
 ```
+
+### Altre distribuzioni
+
+Servono meson, un compilatore C e le librerie di sviluppo di GLib, polkit,
+libusb e OpenSSL. Il percorso del vero fprintd cambia da distribuzione a
+distribuzione: è quello della riga `ExecStart` in `systemctl cat fprintd.service`
+(su Arch `/usr/lib/fprintd`, altrove spesso `/usr/libexec/fprintd`).
+
+```sh
+cd goodix-driver/goodixfpd
+meson setup build --prefix=/usr/local -Dfprintd_path=/usr/libexec/fprintd \
+      -Dsystemd_dropin_dir=/etc/systemd/system/fprintd.service.d
+meson test -C build
+sudo meson install -C build
+sudo systemctl daemon-reload && sudo systemctl restart fprintd
+```
+
+Tutto finisce in `/usr/local` e in `/etc`, dove il gestore di pacchetti non
+scrive: gli aggiornamenti della distribuzione non lo sovrascrivono.
 
 ## 4. Registrare l'impronta
 
@@ -93,12 +121,23 @@ sudo pacman -S pyside6
 python gui/fingerprint_manager.py
 ```
 
-Scegli il dito, premi **Registra** e segui le indicazioni. Servono **circa 30
+Scegli il dito, premi **Registra** e segui le indicazioni. Il primo tocco
+controlla che quel dito non sia già registrato; poi servono **da 15 a 30
 tocchi**. Appoggia il dito come quando sblocchi, ma spostalo un poco a ogni
 tocco (più in alto, più in basso, a sinistra, a destra, leggermente ruotato):
-il sensore vede solo circa 4×3 mm di dito per volta e il template è l'insieme
-di queste zone. Se compare "tocco non valido", premi ben piatto: il controllo
-qualità scarta i tocchi troppo leggeri. Con **Prova** verifichi subito.
+il sensore vede solo circa 4×3 mm di dito per volta e l'impronta salvata è
+l'insieme di queste zone. Un tocco nella stessa posizione di uno già preso
+viene chiesto di nuovo; quando non trovi più posizioni nuove (4 tocchi
+ripetuti di fila, dopo almeno 15) la registrazione si chiude da sola. Se
+compare "tocco non valido", premi ben piatto: il controllo qualità scarta i
+tocchi troppo leggeri. Con **Prova** verifichi subito.
+
+**L'impronta migliora con l'uso.** Quando un tocco viene riconosciuto con
+margine ma cade al bordo delle zone registrate, il servizio lo aggiunge
+all'impronta, come fa Windows: la zona riconosciuta si allarga da sola. Le
+zone della registrazione non vengono mai sostituite; quelle imparate sono al
+massimo 30 e si rinnovano dalla più vecchia. Per disattivarlo:
+`Environment=GOODIX_LEARN=0` in un drop-in di fprintd.
 
 La GUI gestisce anche più dita e più utenti e permette di cancellare le
 impronte. Parla solo con fprintd: non tocca mai direttamente il sensore.
@@ -162,107 +201,74 @@ cd service/keyring-tpm && ./install.sh   # poi logout e nuovo login
 
 ## 7. Aggiornamenti
 
-Il pacchetto `libfprint-goodixgf` sostituisce `libfprint`, quindi `pacman -Syu`
-non lo sovrascrive mai e il lettore non si rompe con gli aggiornamenti. Quando
-la distribuzione pubblica una libfprint più recente, l'hook del pacchetto lo
-segnala alla fine di `pacman -Syu`:
+Non c'è niente da fare: `pacman -Syu` / `paru -Syu` aggiornano libfprint e
+fprintd come sempre, e `goodixfpd` non dipende dalle loro parti interne,
+solo dall'interfaccia D-Bus pubblica di fprintd, stabile da anni.
+
+L'unico caso che richiede un intervento è raro: una nuova versione **binaria**
+di una libreria usata dal servizio (per esempio il passaggio a OpenSSL 4).
+Allora il servizio non si carica più: il lettore si ferma, ma sudo e il login
+chiedono la password come sempre. L'hook del pacchetto lo dice alla fine
+dell'aggiornamento:
 
 ```
->> libfprint 1.94.101 disponibile nei repo (libfprint-goodixgf e' su 1.94.100).
-   Dalla cartella del progetto:  packaging/goodixgf-update
+!! goodixfpd non si carica piu': mancano libssl.so.4
 ```
 
-Allora:
-```sh
-git pull                       # prendi eventuali patch aggiornate
-packaging/goodixgf-update      # porta il PKGBUILD alla nuova versione, ricompila, installa
-```
-
-Lo script riapplica le stesse patch alla nuova versione ufficiale. Se una patch
-non si applica più, la build si ferma e **resta installata la versione
-precedente**: il lettore continua a funzionare finché le patch non vengono
-aggiornate in questo repository.
-
-Cosa fa `pacman -Syu` / `paru -Syu` con il pacchetto installato:
-
-- **non lo tocca**: non è in nessun repository né su AUR, e nessun pacchetto
-  lo sostituisce. fprintd e pam_fprintd vedono soddisfatta la dipendenza da
-  `libfprint`;
-- **la libfprint nuova dei repo non viene installata da sola**: l'hook la
-  segnala e la prendi con `goodixgf-update` quando vuoi;
-- **unico caso da ricompilare**: se un aggiornamento porta OpenCV o mbedtls a
-  una versione con librerie incompatibili, la nostra libreria non si carica
-  più. Il lettore si ferma, ma sudo e il login chiedono la password come
-  sempre. L'hook lo rileva subito:
-  ```
-  !! libfprint-goodixgf non si carica piu': mancano libopencv_core.so.500
-  ```
-  e `packaging/goodixgf-update` la ricompila contro le versioni nuove.
-
-### Correzioni di sicurezza
-
-Una correzione a libfprint arriva in due modi, ed entrambi vengono seguiti:
-
-- **nuova versione upstream** (es. 1.94.101): `goodixgf-update` ricostruisce
-  sulla nuova versione;
-- **correzione della distribuzione sulla stessa versione** (nuovo `pkgrel`,
-  es. 1.94.100-2): Arch la applica con un file patch o con
-  `git cherry-pick` nel PKGBUILD. `goodixgf-update` legge il PKGBUILD ufficiale
-  di quella versione come testo (senza eseguirlo), prende patch e commit e li
-  applica prima delle nostre.
-
-In entrambi i casi l'hook avvisa alla fine del `pacman -Syu` in cui arriva la
-correzione, e l'allineamento richiede circa un minuto.
-
-Se le nostre patch non si applicano sopra la correzione (succede solo se tocca
-lo stesso codice), la build si ferma. Puoi allora passare subito alla libfprint
-ufficiale già corretta:
+e basta ricompilare:
 
 ```sh
-sudo pacman -S libfprint      # rimuove libfprint-goodixgf: impronta ferma, password ok
+cd goodix-driver/packaging/goodixfpd && makepkg -sif
 ```
 
-finché le patch non vengono aggiornate, poi reinstalli con
-`packaging/goodixgf-update`. Non resti mai bloccato su una versione
-vulnerabile.
+Lo segnala anche `checkrebuild` (rebuild-detector, presente su CachyOS), come
+per qualsiasi pacchetto compilato in locale.
 
-Nota: `arch-audit` e il security tracker di Arch conoscono solo il nome
-`libfprint`, non `libfprint-goodixgf`. Il controllo dell'hook copre proprio
-questo, perché segue la versione del pacchetto ufficiale.
-
-**Superficie d'attacco.** libfprint non è esposta in rete. Gira dentro fprintd,
-che è attivabile via D-Bus con autorizzazione polkit. I suoi input sono i
-dispositivi USB collegati e le impronte salvate in `/var/lib/fprint/` (scrivibili
-solo da root). Il codice più specifico, e quindi più a rischio, è il nostro:
-driver goodixgf (protocollo USB e TLS) e matcher SIGFM. Il bug più grave
-trovato finora, le dita sbagliate accettate, stava proprio lì ed è stato
-corretto (`docs/how-it-works.md`).
+**Superficie d'attacco.** Il servizio non è esposto in rete. Gira come fprintd:
+stesso utente root, stessa protezione systemd (`ProtectSystem=strict`, accesso
+solo ai dispositivi USB, niente rete), stesse regole polkit per chi può
+registrare, verificare o agire su un altro utente. I suoi input sono il sensore
+USB, le chiamate D-Bus autorizzate e le impronte in `/var/lib/fprint/goodixfpd/`
+(file 0600 in cartelle 0700, scrivibili solo da root, letti con controllo di
+formato e di appartenenza). Il codice più specifico, e quindi più a rischio, è
+il nostro: protocollo USB e TLS, matcher. Il bug più grave trovato finora, le
+dita sbagliate accettate, stava proprio lì ed è stato corretto
+(`docs/how-it-works.md`).
 
 ## 8. Disinstallare
 
 ```sh
 # togli la riga pam_fprintd dai file PAM modificati al passo 5
-sudo systemctl disable goodixgf-warmup.service
-sudo pacman -S libfprint       # torna alla libfprint ufficiale (rimuove libfprint-goodixgf)
+fprintd-delete "$USER"         # facoltativo: cancella le impronte
+sudo pacman -R goodixfpd       # torna il fprintd della distribuzione
 ```
 
-Le impronte registrate restano in `/var/lib/fprint/` finché non le cancelli
-(`fprintd-delete "$USER"`).
+Senza `goodixfpd` il lettore Goodix non funziona più (libfprint ufficiale non
+lo supporta), e tutto il resto torna esattamente com'era.
 
 ## 9. Risoluzione problemi
 
 Il primo strumento è sempre il log:
 ```sh
-journalctl -u fprintd -b --no-pager | grep -E "goodix|sigfm|frame signal"
+journalctl -u fprintd -b --no-pager | grep -E "goodix|Frame signal|Print|Learned"
 ```
 
+(il servizio gira dentro l'unità `fprintd.service`, quindi il log è quello).
+
 **`fprintd-list` non vede il sensore.** Controlla `lsusb` e che il pacchetto sia
-installato (`pacman -Q libfprint-goodixgf`), poi lancia
-`sudo systemctl restart fprintd`.
+installato (`pacman -Q goodixfpd`), poi `sudo systemctl restart fprintd`. Se
+nel log c'è "No Goodix 27c6:5125/5135 reader, starting fprintd instead", il
+servizio non ha trovato il lettore sul bus USB.
 
 **Il dito non viene mai letto al login subito dopo l'accensione.** Al boot il
-sensore è freddo. Il servizio `goodixgf-warmup.service` (passo 3) fa
-ricampionare la baseline a freddo: verifica che sia abilitato.
+sensore è freddo: al primo uso dopo ogni avvio il servizio scarta la baseline
+salvata e la ricampiona (nel log: "New boot: stored finger-detect baseline
+discarded"). Durante quella prima apertura non tenere il dito sul sensore.
+
+**Il lettore si ferma dopo una sospensione.** Se il sensore smette di
+rispondere durante una verifica, dopo pochi secondi il servizio chiude
+l'operazione ("Sensor lost") e il login passa alla password; il tentativo
+successivo riapre il sensore da capo.
 
 **"Tocco non valido" molto spesso.** Il controllo qualità scarta i tocchi
 leggeri. Nel log, `frame signal ... ridge=` è il contrasto delle creste: un
@@ -271,8 +277,9 @@ creste sono valide ma scartate, puoi abbassare la soglia con
 `Environment=GOODIX_MIN_RIDGE=5` in un drop-in di fprintd.
 
 **Riconosce poco (molti rifiuti).** Ogni rifiuto è un tocco caduto fuori dalle
-zone registrate. Registra di nuovo il dito, coprendo la zona che usi davvero
-per sbloccare.
+zone registrate. Con l'uso l'impronta si allarga da sola (passo 4); se i
+rifiuti restano tanti, registra di nuovo il dito coprendo la zona che usi
+davvero per sbloccare.
 
 **`no image frame received` ripetuto, o il sensore non risponde più.** Riavvia
 fprintd. Se non basta, il sensore può restare bloccato fino al ripristino da
@@ -281,14 +288,14 @@ sensore passato via USB. La procedura completa è in
 [`docs/recovery.md`](recovery.md); serve `Virtualization Technology` attivo nel
 BIOS. Dopo il recupero, il driver Linux riscrive la propria chiave da solo.
 
-**Diagnosi approfondita / taratura.** [`tools/fp_tune/`](../tools/fp_tune) è il
-banco di prova. `calib_session.sh` registra il dito, cattura 25 tocchi genuini
-e 25 di altre dita con i frame grezzi e misura FRR e FAR dal vivo.
-`analyze_session.py` rifà tutto offline con il codice reale del driver. Dump e
-log di debug vengono spenti e cancellati a fine sessione.
+**Diagnosi approfondita / taratura.** Con `Environment=GOODIX_DUMP_IMGPROC=1`
+il servizio salva i frame grezzi in `/var/lib/fprint/goodix/` (solo per la
+taratura: toglilo e cancella i file dopo). Il test `template` di
+`goodixfpd/` rifà offline pipeline e confronto su una cartella di catture
+(`meson setup build -Ddataset=<cartella>`) e misura FRR e FAR.
 
 **Log di debug manuale.**
 ```sh
-sudo systemctl edit fprintd        # aggiungi:  [Service]  Environment=G_MESSAGES_DEBUG=all
+sudo systemctl edit fprintd        # aggiungi:  [Service]  Environment=G_MESSAGES_DEBUG=goodixfpd
 sudo systemctl restart fprintd     # (rimuovi il drop-in quando hai finito)
 ```

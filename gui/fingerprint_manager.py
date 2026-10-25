@@ -5,7 +5,7 @@ Registra, elenca, cancella e testa le impronte di un utente tramite il
 servizio di sistema fprintd (net.reactivated.Fprint) via QtDBus. Nessuna
 dipendenza oltre PySide6: QtDBus parla direttamente col bus di sistema.
 
-Backend = fprintd + libfprint-goodixgf (vedi packaging/). La GUI NON
+Backend = goodixfpd, che risponde come fprintd (vedi goodixfpd/). La GUI NON
 tocca il sensore direttamente: delega tutto a fprintd, quindi convive col
 login a impronta (pam_fprintd) senza litigare il device.
 

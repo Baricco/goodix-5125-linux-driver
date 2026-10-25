@@ -9,6 +9,14 @@ Per una postura "come Windows" servono tre livelli, indipendenti tra loro.
 rilascia chiavi. Il resto del sistema resta protetto dalle sue credenziali come
 prima. Config con fallback password (`auth sufficient`) → nessun lock-out.
 
+Il servizio `goodixfpd` gira come fprintd (root, sandbox di `fprintd.service`)
+e applica le stesse regole polkit: chi può verificare, registrare, o agire su un
+altro utente. Le impronte sono descrittori SIFT, non immagini, in
+`/var/lib/fprint/goodixfpd/<utente>/` (file 0600, cartelle 0700); un file vale
+solo per l'utente e il dito del suo percorso. L'apprendimento con l'uso aggiunge
+solo tocchi riconosciuti con margine doppio e non sostituisce mai i frame della
+registrazione (`GOODIX_LEARN=0` lo spegne).
+
 ## Livello 2 — Sblocco del keyring via TPM (opzionale)
 
 `service/keyring-tpm/`. Con il login a impronta, `gnome-keyring` non riceve la
