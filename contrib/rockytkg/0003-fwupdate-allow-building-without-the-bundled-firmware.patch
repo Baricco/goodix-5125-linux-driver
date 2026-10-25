@@ -1,7 +1,7 @@
-From d850cfe6499e8cdf698ec6bc4770d5598bb56786 Mon Sep 17 00:00:00 2001
+From 4cb1637823fe5281398f895ad225e8b3a4449035 Mon Sep 17 00:00:00 2001
 From: Baricco <38298051+Baricco@users.noreply.github.com>
-Date: Sun, 25 Oct 2026 12:51:25 +0100
-Subject: [PATCH 3/3] fwupdate: allow building without the bundled firmware
+Date: Sun, 25 Oct 2026 14:53:28 +0100
+Subject: [PATCH 3/4] fwupdate: allow building without the bundled firmware
 
 The vendor firmware image (goodix_fw.h) is Goodix copyrighted and cannot
 be shipped by distributions. When the header is absent, build anyway and
@@ -9,14 +9,19 @@ only compare the firmware version: a different version is logged and the
 installed firmware is kept. The erase/flash path exists only together with
 an image, because erasing the APP area without one bricks the sensor.
 
-The Makefile dependency on goodix_fw.h becomes optional accordingly.
-With the header present nothing changes.
+The Makefile dependency on goodix_fw.h becomes optional accordingly, and
+the installers copy the header only when it exists (otherwise they remove
+a copy left in the libfprint tree by an earlier run). With the header
+present nothing changes.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
- Makefile              |  2 +-
- src/goodix_fwupdate.c | 26 ++++++++++++++++++++++++++
- 2 files changed, 27 insertions(+), 1 deletion(-)
+ Makefile                      |  2 +-
+ docs/libfprint-integration.md |  2 +-
+ install-goodixgf-en.sh        | 11 +++++++++--
+ install-goodixgf.sh           | 10 ++++++++--
+ src/goodix_fwupdate.c         | 29 +++++++++++++++++++++++++++++
+ 5 files changed, 48 insertions(+), 6 deletions(-)
 
 diff --git a/Makefile b/Makefile
 index d24363b..25bb0b0 100644
@@ -31,8 +36,64 @@ index d24363b..25bb0b0 100644
  	$(CC) $(CFLAGS) -c -o $@ $<
  
  clean:
+diff --git a/docs/libfprint-integration.md b/docs/libfprint-integration.md
+index 51c381b..4dcd989 100644
+--- a/docs/libfprint-integration.md
++++ b/docs/libfprint-integration.md
+@@ -54,7 +54,7 @@
+      opencv-devel doctest-devel mbedtls-devel fprintd fprintd-pam
+    ```
+ 
+-2. 复制驱动到 fork 源码树 `libfprint/drivers/goodixgf/`：`goodixgf.c` + `core/`（goodix-linux 的 `src/*.c` 去掉 `main.c`，以及 `include/goodix.h`、`include/goodix_imgproc.h`、`include/goodix_fw.h`）。
++2. 复制驱动到 fork 源码树 `libfprint/drivers/goodixgf/`：`goodixgf.c` + `core/`（goodix-linux 的 `src/*.c` 去掉 `main.c`，以及 `include/goodix.h`、`include/goodix_imgproc.h`；`include/goodix_fw.h` 存在时一并复制）。固件镜像可选：没有它时驱动只比较版本，不擦除也不烧写。
+ 
+ 3. patch meson（该 fork 构建系统结构，锚点已对齐）：
+ 
+diff --git a/install-goodixgf-en.sh b/install-goodixgf-en.sh
+index cf31764..629ce5d 100644
+--- a/install-goodixgf-en.sh
++++ b/install-goodixgf-en.sh
+@@ -230,8 +230,15 @@ cp "$GOODIX_LINUX/src/transport.c" \
+    "$GOODIX_LINUX/src/goodix_crc.c" \
+    "$D/core/"
+ cp "$GOODIX_LINUX/include/goodix.h" \
+-   "$GOODIX_LINUX/include/goodix_imgproc.h" \
+-   "$GOODIX_LINUX/include/goodix_fw.h" "$D/core/"
++   "$GOODIX_LINUX/include/goodix_imgproc.h" "$D/core/"
++# goodix_fw.h (vendor firmware image) is optional: without it the driver only
++# compares the version and never erases or flashes. A copy left in the source
++# tree by an earlier run is removed so it is not picked up.
++if [ -f "$GOODIX_LINUX/include/goodix_fw.h" ]; then
++  cp "$GOODIX_LINUX/include/goodix_fw.h" "$D/core/"
++else
++  rm -f "$D/core/goodix_fw.h"
++fi
+ 
+ # Copied driver files from a Windows checkout may carry CRLF (g-ir-scanner's gtk-doc
+ # parser doesn't recognize \r), normalize line endings like the source tree.
+diff --git a/install-goodixgf.sh b/install-goodixgf.sh
+index 034007b..168f0f0 100644
+--- a/install-goodixgf.sh
++++ b/install-goodixgf.sh
+@@ -225,8 +225,14 @@ cp "$GOODIX_LINUX/src/transport.c" \
+    "$GOODIX_LINUX/src/goodix_crc.c" \
+    "$D/core/"
+ cp "$GOODIX_LINUX/include/goodix.h" \
+-   "$GOODIX_LINUX/include/goodix_imgproc.h" \
+-   "$GOODIX_LINUX/include/goodix_fw.h" "$D/core/"
++   "$GOODIX_LINUX/include/goodix_imgproc.h" "$D/core/"
++# goodix_fw.h（厂商固件镜像）可选：没有时驱动只比较版本，绝不擦除或烧写。
++# 同时删除上次运行留在源码树里的旧副本，避免被沿用。
++if [ -f "$GOODIX_LINUX/include/goodix_fw.h" ]; then
++  cp "$GOODIX_LINUX/include/goodix_fw.h" "$D/core/"
++else
++  rm -f "$D/core/goodix_fw.h"
++fi
+ 
+ # 复制的驱动文件若来自 Windows checkout 可能带 CRLF（g-ir-scanner 的 gtk-doc
+ # 解析器不认 \r），与源码树同样做行尾规范化。
 diff --git a/src/goodix_fwupdate.c b/src/goodix_fwupdate.c
-index e1f8aa7..8141877 100644
+index e1f8aa7..31152b1 100644
 --- a/src/goodix_fwupdate.c
 +++ b/src/goodix_fwupdate.c
 @@ -26,8 +26,19 @@
@@ -64,7 +125,17 @@ index e1f8aa7..8141877 100644
  /* 固件更新主流程。
   * now_version：64B 的 EVK 版本字符串。
   * 返回 1 = 无需更新；FW_SOFT_RESET = 已更新并复位；
-@@ -151,6 +164,12 @@ static int fw_update_master(struct goodix_dev *d, uint8_t now_version[64])
+@@ -143,6 +156,9 @@ static int fw_update_master(struct goodix_dev *d, uint8_t now_version[64])
+     char ver[65];
+     memcpy(ver, now_version, 64);
+     ver[64] = 0;
++#if !GX_HAVE_BUNDLED_FW
++    (void)d;    /* 无固件镜像：只比较版本，不对设备做任何写操作 */
++#endif
+ 
+     /* 1. MCU 不在 IAP 时比较版本 */
+     if (!strstr(ver, "IAP")) {
+@@ -151,6 +167,12 @@ static int fw_update_master(struct goodix_dev *d, uint8_t now_version[64])
              LOG("same version, no firmware update needed");
              return 1;
          }
@@ -77,7 +148,7 @@ index e1f8aa7..8141877 100644
          LOG("version differs, Clear App first");
          /* 0xA4 清除 APP 区；gx_send_cmd_wait 成功返回 0（此前这里
           * "r > 0" 分支永远不可达，属于死代码——清除后 MCU 重启进入
-@@ -161,12 +180,19 @@ static int fw_update_master(struct goodix_dev *d, uint8_t now_version[64])
+@@ -161,12 +183,19 @@ static int fw_update_master(struct goodix_dev *d, uint8_t now_version[64])
          gx_dev_evk(d, now_version);
          memcpy(ver, now_version, 64);
          ver[64] = 0;

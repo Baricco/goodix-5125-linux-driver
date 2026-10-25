@@ -1,7 +1,7 @@
-From 4671311cec1717c45254f5f21e65b5959481b0c2 Mon Sep 17 00:00:00 2001
+From ec7e233b2d4478b40f0f95e8c944a7d6cf7526cb Mon Sep 17 00:00:00 2001
 From: Baricco <38298051+Baricco@users.noreply.github.com>
-Date: Sun, 25 Oct 2026 12:51:05 +0100
-Subject: [PATCH 2/3] goodixgf: enroll 15-30 presses instead of 3-8
+Date: Sun, 25 Oct 2026 14:53:28 +0100
+Subject: [PATCH 2/4] goodixgf: enroll 15-30 presses instead of 3-8
 
 A 80x64 frame covers about 4.1 x 3.25 mm of finger at 500 DPI; the area
 used to unlock is about 12 x 14 mm, so covering it with 50% overlap takes

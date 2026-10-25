@@ -1,6 +1,6 @@
-From c7716223040e3c3fdda7cde3d3df52742ab022e9 Mon Sep 17 00:00:00 2001
+From f7da4baeb603c501a66bfc27c1d980dcf3ae98b8 Mon Sep 17 00:00:00 2001
 From: Baricco <38298051+Baricco@users.noreply.github.com>
-Date: Sun, 25 Oct 2026 12:52:35 +0100
+Date: Sun, 25 Oct 2026 14:53:37 +0100
 Subject: [PATCH 1/2] sigfm: fix match ordering dropping valid correspondences
 
 match::operator< compared only p1.y (its second clause repeated the

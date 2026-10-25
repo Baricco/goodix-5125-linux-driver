@@ -1,6 +1,6 @@
-From fd9de12bbaa3c5e737c199ceec7548eb8e5ddac8 Mon Sep 17 00:00:00 2001
+From 93fb0b5fd729e6c34540306c3f1d4ef4a58ad08f Mon Sep 17 00:00:00 2001
 From: Baricco <38298051+Baricco@users.noreply.github.com>
-Date: Sun, 25 Oct 2026 12:52:35 +0100
+Date: Sun, 25 Oct 2026 14:53:38 +0100
 Subject: [PATCH 2/2] sigfm: ignore correspondences that do not move (sensor
  fixed pattern)
 
