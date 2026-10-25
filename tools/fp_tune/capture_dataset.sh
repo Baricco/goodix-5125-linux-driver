@@ -9,9 +9,10 @@
 # Usa sudo per spostare i dump (sono in /var/lib/fprint/goodix, root-owned).
 set -u
 DUMP=/var/lib/fprint/goodix
+REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 LABEL="${1:?uso: capture_dataset.sh <template|genuine|impostor> <n>}"
 N="${2:?manca il numero di tocchi}"
-OUT="$HOME/fp-dataset/$LABEL"
+OUT="$REPO/captures/fp-dataset/$LABEL"   # captures/ e' fuori da git
 mkdir -p "$OUT"
 
 echo ">>> Pulisco i dump precedenti dal driver"

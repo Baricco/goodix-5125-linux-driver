@@ -2,7 +2,8 @@
 # Compila l'harness di tuning contro lo stesso libsigfm.a del driver libfprint.
 set -e
 cd "$(dirname "$0")"
-FORK=/home/baricco/goodix-linux-27c6-5125/libfprint
+# Clone di Rockytkg con il fork libfprint (SIGFM su OpenCV), in ext/ fuori da git.
+FORK="$(cd "$(dirname "$0")/../.." && pwd)/ext/goodix-linux-27c6-5125/libfprint"
 SIGFM_DIR="$FORK/libfprint/sigfm"
 LIBSIGFM="$FORK/build/libfprint/sigfm/libsigfm.a"
 [ -f "$LIBSIGFM" ] || { echo "libsigfm.a non trovato: builda prima libfprint (ninja -C $FORK/build)"; exit 1; }

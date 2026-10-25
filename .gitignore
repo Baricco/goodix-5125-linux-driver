@@ -25,11 +25,6 @@ tools/fp_tune/libsigfm_prod.so
 # istruzioni personali per l agente, non pubblicare
 prompt_goodix_5125.md
 # build del pacchetto (makepkg)
-packaging/libfprint-goodixgf/src/
-packaging/libfprint-goodixgf/pkg/
-packaging/libfprint-goodixgf/libfprint/
-packaging/libfprint-goodixgf/*.pkg.tar.*
-packaging/libfprint-goodixgf/*.log
 # build di goodixfpd (meson)
 goodixfpd/build*/
 goodixfpd/compile_commands.json

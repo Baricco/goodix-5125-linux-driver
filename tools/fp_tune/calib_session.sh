@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Sessione di calibrazione del matcher (una tantum, ~10 minuti di tocchi).
 #
-# Presuppone libfprint-goodixgf installata (packaging/). Durante la sessione
+# Presuppone goodixfpd installato (packaging/goodixfpd). Durante la sessione
 # attiva in fprintd i dump grezzi 16-bit e i log di debug; a fine sessione li
-# spegne da sola e cancella i dump dal sistema (restano solo in ~/fp-dataset2).
+# spegne da sola e cancella i dump dal sistema (restano solo in
+# captures/fp-dataset2, fuori da git).
 #
 #  1. ri-registra il dito (se la pipeline immagine cambia, il vecchio template
 #     non e' piu' confrontabile)
@@ -12,11 +13,11 @@
 #     (tools/fp_tune/analyze_session.py)
 #
 # Uso:  tools/fp_tune/calib_session.sh [n_genuini] [n_impostori]
-# Output: ~/fp-dataset2/<fase>/ (dump imgproc-*), ~/fp-dataset2/session.log
+# Output: captures/fp-dataset2/<fase>/ (dump imgproc-*), captures/fp-dataset2/session.log
 set -u
 DUMP=/var/lib/fprint/goodix
 DEBUG_CONF=/etc/systemd/system/fprintd.service.d/debug.conf
-OUT="$HOME/fp-dataset2"
+OUT="$(cd "$(dirname "$0")/../.." && pwd)/captures/fp-dataset2"
 FINGER=right-index-finger
 NG="${1:-25}"
 NI="${2:-25}"

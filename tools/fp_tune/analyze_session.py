@@ -9,14 +9,15 @@ produzione (libsigfm_prod.so) e simula enroll -> verify:
               stesso dito "inesistente", stress test del FAR)
 Per ogni variante stampa FRR/FAR alle varie soglie.
 
-Uso: tools/.venv/bin/python tools/fp_tune/analyze_session.py [~/fp-dataset2]
+Uso: tools/.venv/bin/python tools/fp_tune/analyze_session.py [captures/fp-dataset2]
 """
 import ctypes, glob, os, re, subprocess, sys, tempfile
 import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RUN = os.path.join(HERE, 'imgproc_run')
-DS = os.path.expanduser(sys.argv[1] if len(sys.argv) > 1 else '~/fp-dataset2')
+DS = os.path.expanduser(sys.argv[1] if len(sys.argv) > 1 else
+                        os.path.join(HERE, '..', '..', 'captures', 'fp-dataset2'))
 PHASES = ('enroll', 'genuine', 'impostor')
 
 

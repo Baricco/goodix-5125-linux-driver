@@ -7,11 +7,11 @@ quindi funziona con `sudo`, greeter e blocco schermo, con la password sempre
 disponibile come alternativa. **Non modifica nessuna libreria**: libfprint e
 fprintd restano quelli della distribuzione e si aggiornano come sempre.
 
-**Stato:** misurato sul sensore reale: 0/25 dita sbagliate accettate, 22/25
-tocchi del dito registrato riconosciuti al primo colpo. Il servizio
-`goodixfpd` dà le stesse decisioni sugli stessi frame grezzi e supera 16
-scenari contro `pam_fprintd` e i comandi `fprintd-*`; la prova dal vivo sul
-sensore è in corso. Vedi [come funziona e perché è sicuro](docs/how-it-works.md).
+**Stato:** funzionante sul sensore reale (MateBook CREM-WXX9): registrazione,
+`sudo`, greeter, blocco schermo e GUI. Sui dati di taratura 0/25 dita
+sbagliate accettate e 22/25 tocchi del dito registrato riconosciuti al primo
+colpo; 16 scenari automatici contro `pam_fprintd` e i comandi `fprintd-*`.
+Vedi [come funziona e perché è sicuro](docs/how-it-works.md).
 
 ## Cosa contiene
 
