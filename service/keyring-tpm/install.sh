@@ -59,14 +59,13 @@ sudo bash "$HERE/seal.sh"
 
 say "Abilito il servizio utente"
 systemctl --user daemon-reload
-systemctl --user enable goodix-keyring-unlock.service
+# reenable: ricrea i link di [Install] anche aggiornando una versione precedente.
+systemctl --user reenable goodix-keyring-unlock.service
 
 cat <<EOF
 
 \033[32mFatto.\033[0m Esegui un LOGOUT completo e rientra (anche con l'impronta):
 il gruppo tss diventa attivo e al login il keyring si sblocca da solo.
-Verifica:  busctl --user get-property org.freedesktop.secrets \\
-             /org/freedesktop/secrets/collection/login \\
-             org.freedesktop.Secret.Collection Locked   # atteso: b false
+Verifica:  journalctl --user -b -u goodix-keyring-unlock   # atteso: "keyring sbloccato"
 Disinstalla con ./uninstall.sh
 EOF

@@ -16,7 +16,11 @@ di **Secure Boot (PCR 7)**, e uno sblocco al login la recupera dal TPM.
    `tss`. Legata a PCR 7: se qualcuno avvia un altro OS, il TPM non la rilascia.
 2. Al login, un servizio utente systemd (`goodix-keyring-unlock.service`)
    dissigilla la password dal TPM e sblocca il keyring via D-Bus Secret Service
-   (`UnlockWithMasterPassword`).
+   (`UnlockWithMasterPassword`). Gira **prima della sessione grafica**
+   (`Before=graphical-session-pre.target`), così shell e app trovano il keyring
+   già aperto e non compare nessun prompt; e **a ogni (ri)avvio di
+   `gnome-keyring-daemon`**, perché lo sblocco vive solo nella memoria del daemon
+   e un suo riavvio lo riporterebbe bloccato.
 3. Una regola polkit consente la `systemd-creds decrypt` senza prompt anche
    quando la sessione non è ancora "attiva" per polkit.
 
@@ -38,13 +42,17 @@ lock-out**. Dopo un cambiamento di PCR 7 basta ri-eseguire `seal.sh`.
 # poi LOGOUT completo + rientro (attiva il gruppo tss)
 ```
 
+Verifica dopo il login: `journalctl --user -b -u goodix-keyring-unlock` deve
+riportare `keyring sbloccato`.
+
 Disinstallazione: `./uninstall.sh`.
 
 ## File
 
 - `gkr_unlock.py` — sblocca il keyring via D-Bus (letta la password da stdin).
 - `keyring-unlock.sh` — hook di login: dissigilla dal TPM + chiama l'unlocker.
-- `goodix-keyring-unlock.service` — servizio utente (WantedBy=default.target).
+- `goodix-keyring-unlock.service` — servizio utente (al login, prima della
+  sessione grafica, e a ogni avvio di `gnome-keyring-daemon.service`).
 - `seal.sh` — (ri)crea il sigillo nel TPM.
 - `49-goodix-keyring-creds.rules.in` — regola polkit (template, `@USER@`).
 
