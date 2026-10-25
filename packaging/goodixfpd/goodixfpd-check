@@ -1,0 +1,13 @@
+#!/bin/sh
+# Lanciato dall'hook di pacman dopo ogni transazione (sola lettura).
+# goodixfpd non modifica nessuna libreria: l'unico modo in cui un
+# aggiornamento lo rompe e' una nuova versione binaria (soname) di una sua
+# dipendenza, per esempio OpenSSL 4. In quel caso il lettore si ferma, ma
+# sudo e il login chiedono la password come sempre.
+bin=/usr/lib/goodixfpd
+missing=$(ldd "$bin" 2>/dev/null | awk '/not found/ {printf "%s ", $1}')
+[ -z "$missing" ] && exit 0
+echo "!! goodixfpd non si carica piu': mancano $missing"
+echo "   Il lettore e' fermo, la password funziona. Ricompila il pacchetto:"
+echo "   cd <repo goodix-driver>/packaging/goodixfpd && makepkg -sif"
+exit 0

@@ -1,0 +1,47 @@
+# Pacchetto del servizio goodixfpd (lettore Goodix 27c6:5125/5135).
+#
+# Nessuna libreria modificata: libfprint e fprintd restano quelli ufficiali
+# della distribuzione. goodixfpd prende il posto del demone di fprintd con un
+# drop-in di fprintd.service e parla la stessa interfaccia D-Bus; se il lettore
+# non c'e' avvia il vero fprintd.
+#
+# Si costruisce dai sorgenti di questo repository:
+#   cd packaging/goodixfpd && makepkg -si
+
+pkgname=goodixfpd
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Fingerprint service for the Goodix 27c6:5125/5135 reader, compatible with fprintd"
+arch=(x86_64)
+license=(GPL-2.0-or-later)
+depends=(
+  fprintd       # pam_fprintd, fprintd-*, interfaccia D-Bus e regole polkit
+  libfprint     # quella ufficiale: serve a fprintd sulle altre macchine
+  glib2
+  libusb
+  openssl
+  polkit
+)
+makedepends=(meson gcc pkgconf)
+checkdepends=(dbus python-gobject python-numpy)
+conflicts=(libfprint-goodixgf)
+install=goodixfpd.install
+source=(goodixfpd.hook goodixfpd-check)
+sha256sums=('SKIP' 'SKIP')
+
+_src="$startdir/../../goodixfpd"
+
+build() {
+  arch-meson "$_src" build
+  meson compile -C build
+}
+
+check() {
+  meson test -C build --print-errorlogs
+}
+
+package() {
+  meson install -C build --destdir "$pkgdir"
+  install -Dm644 goodixfpd.hook "$pkgdir/usr/share/libalpm/hooks/goodixfpd.hook"
+  install -Dm755 goodixfpd-check "$pkgdir/usr/share/goodixfpd/goodixfpd-check"
+}

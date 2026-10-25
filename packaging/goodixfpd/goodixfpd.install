@@ -1,0 +1,21 @@
+post_install() {
+  systemctl daemon-reload >/dev/null 2>&1
+  # il vecchio pacchetto libfprint-goodixgf lasciava abilitato il warm-up:
+  # ora lo fa goodixfpd da solo
+  rm -f /etc/systemd/system/multi-user.target.wants/goodixgf-warmup.service
+  systemctl try-restart fprintd.service >/dev/null 2>&1
+  echo ">> goodixfpd installato: risponde al posto di fprintd per il lettore Goodix."
+  echo "   Le impronte registrate con libfprint-goodixgf non valgono piu':"
+  echo "   registrale di nuovo con  fprintd-enroll  oppure con la GUI del progetto."
+}
+
+post_upgrade() {
+  systemctl daemon-reload >/dev/null 2>&1
+  systemctl try-restart fprintd.service >/dev/null 2>&1
+}
+
+post_remove() {
+  # senza il drop-in torna il fprintd della distribuzione
+  systemctl daemon-reload >/dev/null 2>&1
+  systemctl try-restart fprintd.service >/dev/null 2>&1
+}
