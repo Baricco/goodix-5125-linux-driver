@@ -1,10 +1,10 @@
-/* test-tls.c - il server TLS-PSK del core contro un client TLS 1.2 PSK che
- * fa la parte del sensore: handshake, dati applicativi in acquisizione,
- * riconnessione, PSK sbagliata.
+/* test-tls.c - the core's TLS-PSK server against a TLS 1.2 PSK client that
+ * plays the sensor's part: handshake, application data during capture,
+ * reconnection, wrong PSK.
  *
- * Il livello USB e' sostituito da code in memoria: quello che il server
- * manda con gx_send_tls_frame() arriva al client, quello che il client
- * produce torna al server come trame 0xB0 da gx_read_frame().
+ * The USB layer is replaced by in-memory queues: what the server sends with
+ * gx_send_tls_frame() reaches the client, what the client produces goes back
+ * to the server as 0xB0 frames from gx_read_frame().
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -18,11 +18,11 @@
 
 int gx_debug;
 
-/* ---- sensore finto ---- */
+/* ---- fake sensor ---- */
 
 static SSL_CTX *cli_ctx;
 static SSL *cli;
-static BIO *cli_in, *cli_out;           /* dal server / verso il server */
+static BIO *cli_in, *cli_out;           /* from the server / to the server */
 static uint8_t client_psk[32];
 static int connected;
 
@@ -80,12 +80,12 @@ static void client_new(void)
     q_head = q_tail = 0;
 }
 
-/* ---- stub del livello frame/comandi usati da goodix_tls.c ---- */
+/* ---- stubs of the frame/command layer used by goodix_tls.c ---- */
 
 int gx_send_tls_frame(struct goodix_dev *d, const uint8_t *record, uint16_t rlen)
 {
     (void)d;
-    /* un record per trama, come per il sensore vero */
+    /* one record per frame, as with the real sensor */
     assert(rlen >= 5 && (size_t)(((record[3] << 8) | record[4]) + 5) == rlen);
     BIO_write(cli_in, record, rlen);
     client_step();
@@ -151,7 +151,7 @@ static void test_handshake_and_data(void)
     assert(strcmp(SSL_get_cipher_name(cli), "PSK-AES128-GCM-SHA256") == 0);
     assert(SSL_version(cli) == TLS1_2_VERSION);
 
-    /* acquisizione: il chiamante legge le trame e inietta i record */
+    /* capture: the caller reads the frames and injects the records */
     gx_tls_capture_mode(&d, 1);
     assert(SSL_write(cli, msg, sizeof(msg)) == (int)sizeof(msg));
     q_push_records();
@@ -163,9 +163,9 @@ static void test_handshake_and_data(void)
     }
     assert(gx_tls_recv(&d, out, sizeof(out), 0) == (int)sizeof(msg));
     assert(memcmp(out, msg, sizeof(msg)) == 0);
-    assert(gx_tls_recv(&d, out, sizeof(out), 0) < 0);   /* niente altro */
+    assert(gx_tls_recv(&d, out, sizeof(out), 0) < 0);   /* nothing else */
 
-    /* riconnessione chiesta dal sensore: sessione nuova */
+    /* reconnection requested by the sensor: new session */
     gx_tls_capture_mode(&d, 0);
     client_new();
     assert(gx_tls_reconnect(&d) == 0);
@@ -173,8 +173,8 @@ static void test_handshake_and_data(void)
 
     gx_tls_free(&d);
     assert(d.tls == NULL && !d.tls_inited);
-    gx_tls_free(&d);            /* idempotente */
-    printf("ok - handshake, dati in acquisizione, riconnessione\n");
+    gx_tls_free(&d);            /* idempotent */
+    printf("ok - handshake, data during capture, reconnection\n");
 }
 
 static void test_wrong_psk(void)
@@ -190,7 +190,7 @@ static void test_wrong_psk(void)
     assert(!d.tls_inited);
     gx_tls_free(&d);
     ERR_clear_error();
-    printf("ok - PSK diversa rifiutata\n");
+    printf("ok - different PSK rejected\n");
 }
 
 static void test_no_psk(void)
@@ -200,7 +200,7 @@ static void test_no_psk(void)
     memset(&d, 0, sizeof(d));
     assert(gx_tls_server_init(&d) < 0);
     assert(d.tls == NULL);
-    printf("ok - niente PSK, niente server\n");
+    printf("ok - no PSK, no server\n");
 }
 
 int main(void)

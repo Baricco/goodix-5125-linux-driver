@@ -1,52 +1,56 @@
-# Secure Boot su CachyOS + limine (con sbctl)
+# Secure Boot on CachyOS + limine (with sbctl)
 
-Abilitare Secure Boot con chiavi proprie. Serve come base di sicurezza per lo
-sblocco del keyring via TPM (PCR 7) e per LUKS+TPM: senza Secure Boot, PCR 7 non
-lega il sigillo al tuo OS (un live USB con SB off riprodurrebbe lo stesso valore).
+Enabling Secure Boot with your own keys. It is the security basis for the
+keyring unlock via TPM (PCR 7) and for LUKS+TPM: without Secure Boot, PCR 7
+does not bind the seal to your OS (a live USB with SB off would reproduce the
+same value).
 
-Stack di riferimento: CachyOS, bootloader **limine** + `mkinitcpio`, ESP su `/boot`.
-Su limine **non** si firmano i kernel a mano: limine li verifica con hash BLAKE2B
-in `limine.conf`; il firmware verifica solo l'EFI di limine. Firmare i kernel con
-`sbctl-batch-sign` ROMPE il boot (hash panic). La pipeline CachyOS firma kernel ed
-EFI da sola agli update (post-hook sbctl + `limine-update`), quindi gli
-aggiornamenti **non** ti lasciano un kernel non firmato.
+Reference stack: CachyOS, **limine** bootloader + `mkinitcpio`, ESP on `/boot`.
+With limine you do **not** sign the kernels by hand: limine verifies them with
+BLAKE2B hashes in `limine.conf`; the firmware verifies only limine's EFI
+binary. Signing the kernels with `sbctl-batch-sign` BREAKS boot (hash panic).
+The CachyOS pipeline signs kernels and EFI binaries by itself on updates
+(sbctl post-hook + `limine-update`), so updates do **not** leave you with an
+unsigned kernel.
 
-## Procedura (l'ordine conta: firma PRIMA, accendi SB PER ULTIMO)
+## Procedure (order matters: sign FIRST, turn SB on LAST)
 
 ```sh
 # 0. Tooling
 sudo pacman -S --needed sbctl
-sudo sbctl status        # guarda "Setup Mode" e "Secure Boot"
+sudo sbctl status        # look at "Setup Mode" and "Secure Boot"
 
-# 1. Se "Setup Mode" = Disabled: entra in BIOS -> cancella/azzera le chiavi
-#    Secure Boot (mette il firmware in Setup Mode), lascia SB spento, torna qui.
-#    Se "Setup Mode" = Enabled: salta questo passo.
+# 1. If "Setup Mode" = Disabled: enter the BIOS -> clear/reset the Secure Boot
+#    keys (this puts the firmware in Setup Mode), leave SB off, come back here.
+#    If "Setup Mode" = Enabled: skip this step.
 
-# 2. Chiavi + firma di limine (SB ancora spento)
+# 2. Keys + signing limine (SB still off)
 sudo sbctl create-keys
-sudo sbctl enroll-keys -m            # -m = tieni le chiavi Microsoft (option ROM/GPU)
+sudo sbctl enroll-keys -m            # -m = keep the Microsoft keys (option ROMs/GPU)
 sudo limine-enroll-config
-sudo limine-update                   # firma /boot/EFI/limine/limine_x64.efi
+sudo limine-update                   # signs /boot/EFI/limine/limine_x64.efi
 sudo sbctl sign -s /boot/EFI/BOOT/BOOTX64.EFI   # fallback loader
-sudo sbctl verify                    # limine + BOOTX64 = signed; kernel unsigned = ok
+sudo sbctl verify                    # limine + BOOTX64 = signed; unsigned kernels = ok
 
-# 3. BIOS: accendi Secure Boot, salva, riavvia.
+# 3. BIOS: turn Secure Boot on, save, reboot.
 
-# 4. Verifica
+# 4. Check
 sudo sbctl status                    # Setup Mode: Disabled, Secure Boot: Enabled
 bootctl status | grep -i secure      # "Secure Boot: enabled (user)"
 ```
 
-NB sui comandi `sbctl`: ritornano un exit-code non-zero anche in caso di successo;
-in fish la catena `&&` / `; and` si spezza → usare `;` secco.
+Note on the `sbctl` commands: they return a non-zero exit code even on
+success; in fish an `&&` / `; and` chain breaks → use a plain `;`.
 
 ## Rollback
 
-Nessun dato toccato. Se non avvia: BIOS → Secure Boot: **Disabled** → riparte.
-Reset completo: USB live → chroot → `sbctl reset`, poi disattiva SB in BIOS.
+No data is touched. If it does not boot: BIOS → Secure Boot: **Disabled** → it
+starts again. Full reset: live USB → chroot → `sbctl reset`, then disable SB in
+the BIOS.
 
 ## fTPM (AMD)
 
-Su AMD il TPM è spesso `fTPM` (firmware). Un `Clear TPM`, un reset CMOS o un
-update del BIOS possono azzerare i segreti sigillati e cambiare PCR 7 → i sigilli
-(keyring, LUKS) vanno ri-creati. I fallback previsti evitano il lock-out.
+On AMD the TPM is often an `fTPM` (firmware TPM). A `Clear TPM`, a CMOS reset
+or a BIOS update can wipe the sealed secrets and change PCR 7 → the seals
+(keyring, LUKS) have to be created again. The planned fallbacks avoid any
+lockout.

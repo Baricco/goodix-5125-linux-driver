@@ -1,15 +1,16 @@
-/* goodix.h - Goodix USB 指纹传感器驱动（完整的设备驱动实现）
+/* goodix.h - Goodix USB fingerprint sensor driver (complete device driver
+ * implementation)
  *
- * 在 Linux 上实现完整的设备驱动协议：
- *   - libusb 批量传输层
- *   - 帧与命令层
- *   - 初始化序列
- *   - 经 MCU 的 PSK 管理
- *   - PSK 的白盒 AES
- *   - TLS-PSK 服务器通道（OpenSSL memory BIO）
- *   - 图像采集
+ * Implements the complete device protocol on Linux:
+ *   - libusb bulk transport layer
+ *   - frame and command layers
+ *   - initialization sequence
+ *   - PSK management through the MCU
+ *   - white-box AES for the PSK
+ *   - TLS-PSK server channel (OpenSSL memory BIO)
+ *   - image capture
  *
- * 设备：27c6:5125 / 27c6:5135，GF5116M (Milan)，CDC ACM 批量传输。
+ * Devices: 27c6:5125 / 27c6:5135, GF5116M (Milan), CDC ACM bulk transport.
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 #ifndef GOODIX_H
@@ -20,42 +21,43 @@
 #include <stdbool.h>
 #include <stdio.h>
 
-extern int gx_debug;  /* USB 十六进制转储开关（GOODIX_DEBUG=1） */
+extern int gx_debug;  /* USB hex dump switch (GOODIX_DEBUG=1) */
 
-/* 共享日志宏（所有模块） */
+/* shared log macro (all modules) */
 #define LOG(fmt, ...) fprintf(stderr, "[goodix] " fmt "\n", ##__VA_ARGS__)
 
-/* 固件更新“MCU 软复位、停止初始化”标记（0xFFDFFFF3） */
+/* firmware update "MCU soft reset, stop init" marker (0xFFDFFFF3) */
 #define FW_SOFT_RESET (-2097165)
 
 #define GOODIX_VID         0x27c6
 #define GOODIX_PID_5125    0x5125
 #define GOODIX_PID_5135    0x5135
 
-/* 端点由 27c6:5125 的配置描述符验证（pkt9）：USB CDC-ACM，2 个接口：
- *   iface 0（CDC comm）：EP 0x82 INT-IN(8B)   -- 通知
- *   iface 1（CDC data）：EP 0x01 BULK-OUT(64B)
- *                       EP 0x81 BULK-IN(64B) -- 数据通道
- * 使用 iface 1 上的批量端点 0x01/0x81。 */
+/* Endpoints verified from the 27c6:5125 configuration descriptor (pkt9):
+ * USB CDC-ACM, 2 interfaces:
+ *   iface 0 (CDC comm): EP 0x82 INT-IN(8B)   -- notifications
+ *   iface 1 (CDC data): EP 0x01 BULK-OUT(64B)
+ *                       EP 0x81 BULK-IN(64B) -- data channel
+ * The bulk endpoints 0x01/0x81 on iface 1 are used. */
 #define GOODIX_EP_OUT      0x01    /* bulk OUT 64B, interface 1 */
-#define MAX_FRAME        20480   /* TLS 记录（16K）/ 图像帧（19K） */
+#define MAX_FRAME        20480   /* TLS record (16K) / image frame (19K) */
 #define GOODIX_EP_IN       0x81    /* bulk IN 64B, interface 1 */
 #define GOODIX_IFACE_DATA  1
 
-/* ---- 帧类型 ---- */
+/* ---- frame types ---- */
 #define GF_TYPE_PLAIN   0xA0
 #define GF_TYPE_TLS     0xB0
-#define GF_NO_CHECK     0x88    /* 帧尾值：跳过校验和 */
+#define GF_NO_CHECK     0x88    /* frame tail value: skip the checksum */
 
-/* ---- 帧偏移 ---- */
+/* ---- frame offsets ---- */
 #define GF_HDR_TYPE     0
-#define GF_HDR_LEN      1       /* 2 字节小端负载长度 */
+#define GF_HDR_LEN      1       /* 2-byte little-endian payload length */
 #define GF_HDR_CKS      3       /* b0+b1+b2 */
 #define GF_CMD_BYTE     4       /* (cmd0<<4)|(cmd1<<1) */
-#define GF_DATA_LEN     5       /* 2 字节小端：数据长度 + 1 */
+#define GF_DATA_LEN     5       /* 2-byte little endian: data length + 1 */
 #define GF_DATA         7
 
-/* USB 命令字节（命令字节 = (cmd0<<4)|(cmd1<<1)，|1 = 更多位） */
+/* USB command bytes (command byte = (cmd0<<4)|(cmd1<<1), |1 = more bit) */
 enum {
     GF_CMD_RESET_SENSOR    = 0xA2,  /* (10,1) data={1,20} */
     GF_CMD_CLEAR_APP       = 0xA4,  /* (10,2) data={0,0} */
@@ -83,7 +85,7 @@ enum {
     GF_MODE_CAPTURE = 3,
 };
 
-/* 响应类型（响应字节的高半字节） */
+/* response types (high nibble of the response byte) */
 enum {
     GF_RESP_IMAGE = 2,
     GF_RESP_FDT = 3,
@@ -96,25 +98,26 @@ enum {
     GF_RESP_PROD_RESP = 14,
 };
 
-/* 传感器几何参数。按 chipid 选择：
+/* Sensor geometry. Picked by chipid:
  *   type 2  MilanG   (chipid 0x2208): 176x54,  frame 19008
  *   type 3  MilanL   (chipid 0x2205): 112x132, frame 29568
  *   type 12 ChicagoHS(0x2503/0x2504): 80x64,   frame 10240
  *   type 14 ChicagoT (0x2505-0x2508/0x2510): 36x160, frame 11520
- * 目标设备（27c6:5125 GF5116M）为 MilanG。 */
-#define GF_IMG_W    176     /* MilanG 默认值 */
+ * The target device (27c6:5125 GF5116M) is MilanG. */
+#define GF_IMG_W    176     /* MilanG defaults */
 #define GF_IMG_H    54
 #define GF_IMG_SIZE (GF_IMG_W * GF_IMG_H * 2)   /* 19008 */
-#define GF_IMG_MAX  29568   /* 最大帧（MilanL 112x132x2） */
+#define GF_IMG_MAX  29568   /* largest frame (MilanL 112x132x2) */
 
-/* 生产数据类型 */
-/* 生产数据类型：
- *  0xBB020002 = PSK 数据块：[seal][entropy 8B][0xBB010003 wb 块]
- *  0xBB020003 = MCU 由 WB 解密出的 PSK 计算得到的 PSK 哈希（32B）
- *  写 TLV:     [0xBB010002][len][seal][entropy][0xBB010003][len][wb] */
-#define GF_DT_PSK_DATA   0xBB010002u  /* 主机 PSK 数据（seal+entropy） */
-#define GF_DT_PSK_HASH   0xBB020003u  /* MCU 计算出的 WB 哈希（校验 PSK 有效性） */
-#define GF_DT_PSK_WB     0xBB010003u  /* WB 块存储段（写密钥的第二个 TLV） */
+/* production data types */
+/* Production data types:
+ *  0xBB020002 = PSK data block: [seal][entropy 8B][0xBB010003 wb block]
+ *  0xBB020003 = PSK hash (32B) computed by the MCU from the PSK it decrypted
+ *               from the WB
+ *  write TLV:  [0xBB010002][len][seal][entropy][0xBB010003][len][wb] */
+#define GF_DT_PSK_DATA   0xBB010002u  /* host PSK data (seal+entropy) */
+#define GF_DT_PSK_HASH   0xBB020003u  /* WB hash computed by the MCU (checks that the PSK is valid) */
+#define GF_DT_PSK_WB     0xBB010003u  /* WB block storage segment (second TLV of the key write) */
 
 /* ---- device ---- */
 struct goodix_dev {
@@ -122,227 +125,255 @@ struct goodix_dev {
     void *usb_devh;
     uint16_t vid, pid;
 
-    /* 批量端点（已验证 0x01 OUT / 0x81 IN） */
+    /* bulk endpoints (verified 0x01 OUT / 0x81 IN) */
     uint8_t ep_out;
     uint8_t ep_in;
 
-    /* 传感器信息 */
+    /* sensor info */
     uint8_t evk[64];
     uint16_t chipid;
     uint8_t sensor_type;
     uint16_t img_w, img_h, img_size;
 
-    /* PSK（32B，由 MCU 经白盒 AES 提供） */
+    /* PSK (32B, provided by the MCU through white-box AES) */
     uint8_t psk[32];
     size_t psk_len;
     bool have_psk;
 
-    /* TLS（OpenSSL，见 goodix_tls.c） */
-    void *tls;          /* TLS 上下文 */
-    bool tls_inited;    /* TLS 握手完成，设备侧已确认 */
+    /* TLS (OpenSSL, see goodix_tls.c) */
+    void *tls;          /* TLS context */
+    bool tls_inited;    /* TLS handshake done and confirmed by the device */
 
-    /* 采集 */
+    /* capture */
     uint8_t image[GF_IMG_MAX];
     bool have_image;
-    volatile int capture_stop;      /* gx_capture_cancel 置位，采集循环检查 */
-    /* 可选采集事件回调（libfprint 对接用）：FDT down/up 推送帧到达时
-     * 在采集上下文同步触发。见 gx_capture_set_event_cb。 */
+    volatile int capture_stop;      /* set by gx_capture_cancel, checked by the capture loop */
+    /* Optional capture event callback (for the libfprint glue): fired
+     * synchronously in the capture context when FDT down/up push frames
+     * arrive. See gx_capture_set_event_cb. */
     void (*event_cb)(struct goodix_dev *d, int event, void *user);
     void *event_cb_user;
 
-    /* 初始化状态 */
-    bool mcu_inited;      /* MCU 初始化完成 */
-    bool fp_inited;       /* 传感器初始化完成 */
-    bool have_config;     /* 配置下载成功 */
-    uint8_t besd;         /* BESD 使能标志 */
+    /* init state */
+    bool mcu_inited;      /* MCU init done */
+    bool fp_inited;       /* sensor init done */
+    bool have_config;     /* config download succeeded */
+    uint8_t besd;         /* BESD enable flag */
 
-    /* OTP + FDT 基线 */
-    uint8_t otp[256];       /* OTP 读取（0xA6）内容 */
-    uint16_t otp_len;       /* 有效长度：type 12/14 = 64 */
-    uint8_t fdt_delta;      /* OTP 解析出的 FDT delta（默认 21） */
-    uint16_t fdt_tcode;     /* OTP 解析出的 tcode（默认 128） */
-    uint8_t fdt_down_base[12]; /* FDT-down 阈值表（变换后） */
-    uint8_t fdt_up_base[12];   /* FDT-up 阈值表 */
-    bool base_valid;        /* base 文件加载成功且 OTP 匹配 / 采样成功 */
-    bool base_dirty;        /* 运行时从 FDT IRQ 学到了新基线，待落盘 */
-    int last_fdt_irq;       /* 最近一次 FDT 事件的 IrqStatus（区分 reverse 触发） */
+    /* OTP + FDT baseline */
+    uint8_t otp[256];       /* contents read from the OTP (0xA6) */
+    uint16_t otp_len;       /* valid length: type 12/14 = 64 */
+    uint8_t fdt_delta;      /* FDT delta parsed from the OTP (default 21) */
+    uint16_t fdt_tcode;     /* tcode parsed from the OTP (default 128) */
+    uint8_t fdt_down_base[12]; /* FDT-down threshold table (transformed) */
+    uint8_t fdt_up_base[12];   /* FDT-up threshold table */
+    bool base_valid;        /* base file loaded and OTP matches / sampling succeeded */
+    bool base_dirty;        /* a new baseline was learned from FDT IRQs at run time, to be saved */
+    int last_fdt_irq;       /* IrqStatus of the latest FDT event (tells reverse triggers apart) */
 
-    /* 无手指基线图像（对应 goodix.dat 的 imagebase 段），
-     * 主机侧手指判别的比较基准。
-     * init 期用 SetMode Image 直接曝光采一帧并存档；
-     * 温度漂移（判别返回 0）时重采更新。 */
+    /* No-finger baseline image (the imagebase section of goodix.dat), the
+     * reference for host-side finger detection.
+     * Captured by direct exposure with SetMode Image at init and saved;
+     * resampled on temperature drift (when the decision returns 0). */
     uint8_t img_base[GF_IMG_MAX];
-    bool img_base_valid;    /* 基线图像可用（文件加载或 init 采样成功） */
+    bool img_base_valid;    /* baseline image available (loaded from file or sampled at init) */
 
-    /* 新鲜无手指帧：布防 FDT down 前直接曝光采一帧（默认开启，
-     * GOODIX_IMGPROC_FRESH_BASE=0 关闭），与手指帧时间上紧邻，消除基线
-     * 漂移。通过合理性检查（相对 img_base 的整体压低量不像手指）才置 valid。 */
+    /* Fresh no-finger frame: captured by direct exposure before arming FDT
+     * down (on by default, GOODIX_IMGPROC_FRESH_BASE=0 turns it off); being
+     * close in time to the finger frame, it removes baseline drift. It is
+     * marked valid only if it passes the sanity check (its overall lowering
+     * relative to img_base does not look like a finger). */
     uint8_t img_fresh[GF_IMG_MAX];
     bool img_fresh_valid;
-    bool fresh_broken;      /* 本次 open 内新鲜帧超时过：不再请求，回退存档基线 */
+    bool fresh_broken;      /* a fresh frame timed out during this open: no more requests, fall back to
+     * the saved baseline */
 
-    /* TLS 解密数据聚合缓冲（goodix_capture.c 的混合通道：B0 帧解密后的
-     * 字节流先攒出完整 payload 再分流）。放设备结构里而不是文件级 static，
-     * 保证多设备实例/重入安全。 */
+    /* Aggregation buffer for TLS-decrypted data (the mixed channel of
+     * goodix_capture.c: the byte stream decrypted from B0 frames is collected
+     * into a complete payload before being dispatched). Kept in the device
+     * struct instead of a file-level static, so multiple device instances
+     * and reentrancy are safe. */
     uint8_t rx_acc[3 + 0x6C00];
     size_t rx_acc_len;
 
-    /* 采集接收工作缓冲（goodix_capture.c）：采集路径单线程顺序使用。
-     * rx_scratch 是各采集函数（wait_image / gx_fdt_sample_base /
-     * gx_wait_finger_up，互不并发）的 payload 工作区；rx_frame 是
-     * next_payload 的 USB 帧重组缓冲。同样挂设备上避免文件级 static。 */
+    /* Capture receive work buffers (goodix_capture.c), used sequentially by the
+     * single-threaded capture path. rx_scratch is the payload work area of
+     * the capture functions (wait_image / gx_fdt_sample_base /
+     * gx_wait_finger_up, never concurrent); rx_frame is the USB frame
+     * reassembly buffer of next_payload. Also kept in the device to avoid
+     * file-level statics. */
     uint8_t rx_scratch[3 + 0x6C00];
     uint8_t rx_frame[MAX_FRAME];
 };
 
-/* ---- 传输层 (transport.c) ---- */
+/* ---- transport layer (transport.c) ---- */
 int gx_transport_open(struct goodix_dev *d);
 void gx_transport_close(struct goodix_dev *d);
 int gx_usb_write(struct goodix_dev *d, const uint8_t *b, size_t n);
 int gx_usb_read(struct goodix_dev *d, uint8_t *b, size_t cap, int tmo);
 int gx_usb_reset(struct goodix_dev *d);
 
-/* ---- 共享 CRC-32/MPEG-2（goodix_crc.c）----
- * poly 0x04C11DB7，初值/续值 crc（通常 0xFFFFFFFFu），MSB-first，无最终
- * 异或。图像线 CRC、goodix.dat 基线 CRC、固件 CRC 三者共用。 */
+/* ---- shared CRC-32/MPEG-2 (goodix_crc.c) ----
+ * poly 0x04C11DB7, initial/continuation value crc (usually 0xFFFFFFFFu),
+ * MSB first, no final XOR. Shared by the image line CRC, the goodix.dat
+ * baseline CRC and the firmware CRC. */
 uint32_t gx_crc32_mpeg2(const uint8_t *data, size_t len, uint32_t crc);
 
-/* 取消采集（gx_capture_cancel）后长流程（初始化唤醒重试、重枚举轮询、
- * 采集循环）据此快速退出，避免 fprintd stop/deactivate 等待数秒。 */
+/* After a capture cancel (gx_capture_cancel) the long flows (init wake-up
+ * retries, re-enumeration polling, capture loop) use this to leave quickly,
+ * so fprintd stop/deactivate does not wait for seconds. */
 static inline int gx_stop_requested(struct goodix_dev *d)
 {
     return d->capture_stop;
 }
 
-/* ---- 帧层 (goodix_frame.c) ---- */
+/* ---- frame layer (goodix_frame.c) ---- */
 int  gx_send_cmd_frame(struct goodix_dev *d, uint8_t cmd,
                        const uint8_t *data, uint16_t datalen);
 int  gx_send_tls_frame(struct goodix_dev *d, const uint8_t *record, uint16_t rlen);
 int  gx_read_frame(struct goodix_dev *d, uint8_t *frame, uint16_t *len, int tmo);
 int  gx_send_nop(struct goodix_dev *d);
 
-/* ---- 命令层 (goodix_cmd.c) ---- */
+/* ---- command layer (goodix_cmd.c) ---- */
 int gx_send_cmd(struct goodix_dev *d, uint8_t cmd,
                 const uint8_t *data, uint16_t len, int tmo);
 int gx_send_cmd_wait(struct goodix_dev *d, uint8_t cmd,
                      const uint8_t *data, uint16_t len,
                      uint8_t *rsp, uint16_t *rsp_len, int tmo);
 int gx_set_driver_state(struct goodix_dev *d, uint8_t state);
-/* MCU 生产读写 */
+/* MCU production read/write */
 int gx_mcu_read(struct goodix_dev *d, uint32_t data_type, uint8_t *out, uint16_t *len);
 int gx_mcu_write(struct goodix_dev *d, const uint8_t *data, uint16_t len);
-/* 设备命令辅助函数 */
+/* device command helpers */
 int gx_dev_reset(struct goodix_dev *d);
 int gx_dev_evk(struct goodix_dev *d, uint8_t out[64]);
 int gx_get_mcu_state(struct goodix_dev *d, uint8_t out[16]);
 int gx_tls_server_cmd(struct goodix_dev *d);
 int gx_tls_handshake_cmd(struct goodix_dev *d);
 
-/* ---- 设备初始化 (goodix_init.c) ---- */
+/* ---- device init (goodix_init.c) ---- */
 int gx_device_init(struct goodix_dev *d);
 
 /* ---- PSK (goodix_psk.c) ---- */
-int gx_psk_read_from_mcu(struct goodix_dev *d);          /* 读取 + WB 解密 */
-int gx_psk_write_to_mcu(struct goodix_dev *d, const uint8_t *psk); /* 生成 + WB 加密 + 写入 */
+int gx_psk_read_from_mcu(struct goodix_dev *d);          /* read + WB decrypt */
+int gx_psk_write_to_mcu(struct goodix_dev *d, const uint8_t *psk); /* generate + WB encrypt + write */
 int gx_wb_encrypt(const uint8_t *plain, uint32_t len, uint8_t *out, uint32_t *out_len);
 int gx_wb_decrypt(const uint8_t *wb, uint32_t wb_len, uint8_t *plain, uint32_t *plain_len);
-  /* PSK 主机侧存储（对应 Goodix_Cache.bin）。
-   * 参考实现用 DPAPI（CryptProtectData）封装 PSK 做本地持久化；MCU 从不
-   * 接触它。Linux 上我们把明文 PSK 以 0600 权限存入 gx_state_dir() 下的
-   * 文件——等价的单用户保护。也可换用 Secret-Service（libsecret）后端，
-   * 无需改动 MCU 协议。 */
+  /* Host-side PSK storage (the equivalent of Goodix_Cache.bin).
+   * The reference implementation wraps the PSK with DPAPI
+   * (CryptProtectData) for local persistence; the MCU never sees it. On
+   * Linux the plaintext PSK is stored in a 0600 file under gx_state_dir() -
+   * the equivalent single-user protection. A Secret Service (libsecret)
+   * backend could be used instead, with no change to the MCU protocol. */
   int gx_psk_store_save(const uint8_t *psk, uint32_t len);
   int gx_psk_store_load(uint8_t *psk, uint32_t *len);
-  /* 主机哈希 = SHA256(整个 WB 块) */
+  /* host hash = SHA256(the whole WB block) */
   int gx_psk_host_hash(const uint8_t *wb, uint32_t wb_len, uint8_t out[32]);
-  /* 校验：读取 MCU 哈希 0xBB020003 并与 SHA256(我们的 WB) 比较，
-   * 证明 MCU 正确解密了我们的 WB 块（WB 加密正确）。 */
+  /* Check: reads the MCU hash 0xBB020003 and compares it with SHA256(our
+   * WB), proving the MCU decrypted our WB block correctly (the WB encryption
+   * is right). */
   int gx_psk_verify_mcu_hash(struct goodix_dev *d);
 
 /* ---- TLS (goodix_tls.c) ---- */
 int gx_tls_server_init(struct goodix_dev *d);
 int gx_tls_handshake(struct goodix_dev *d);
-int gx_tls_reconnect(struct goodix_dev *d);   /* 重连（0xDA 请求） */
+int gx_tls_reconnect(struct goodix_dev *d);   /* reconnection (0xDA request) */
 int gx_tls_recv(struct goodix_dev *d, uint8_t *data, size_t cap, int tmo);
-/* 释放 TLS 上下文（gx_transport_close 调用；可重复调用） */
+/* frees the TLS context (called by gx_transport_close; may be called more
+ * than once) */
 void gx_tls_free(struct goodix_dev *d);
-/* 采集等待模式的混合通道支持（采集通道的行为：A0 明文帧直接进入帧处理
- * 流程，B0 帧经 OpenSSL 解密后再进入同一流程）：
- *   gx_tls_capture_mode(1) 后 tls_bio_recv 不再自己读 USB（避免把明文
- *   推送帧吞掉），只 drain 注入缓冲；调用方用 gx_read_frame 收帧，
- *   B0 记录用 gx_tls_feed 注入，再用 gx_tls_recv 取解密数据。 */
+/* Mixed-channel support for the capture wait mode (behaviour of the capture
+ * channel: A0 plaintext frames go straight into frame processing, B0 frames
+ * are decrypted by OpenSSL and then enter the same flow):
+ *   after gx_tls_capture_mode(1) tls_bio_recv no longer reads USB itself (so
+ *   plaintext push frames are not swallowed), it only drains the injection
+ *   buffer; the caller receives frames with gx_read_frame, injects B0
+ *   records with gx_tls_feed and takes the decrypted data with gx_tls_recv. */
 void gx_tls_capture_mode(struct goodix_dev *d, int on);
 int  gx_tls_feed(struct goodix_dev *d, const uint8_t *record, size_t len);
 
-/* ---- 采集 (goodix_capture.c) ---- */
+/* ---- capture (goodix_capture.c) ---- */
 int gx_capture(struct goodix_dev *d, uint8_t *img, uint16_t *size);
-/* FDT 基线采样：FDT-manual (0x36 [9,1,表]) 让 MCU 现场采样无手指 FDT
- * 基线并推送 IrqStatus=0x100 帧；学习为 down 阈值表。
- * 成功返回 0 且 d->base_valid=true。 */
+/* FDT baseline sampling: FDT-manual (0x36 [9,1,table]) makes the MCU sample
+ * the no-finger FDT baseline on the spot and push an IrqStatus=0x100 frame;
+ * it is learned as the down threshold table.
+ * Returns 0 on success with d->base_valid=true. */
 int gx_fdt_sample_base(struct goodix_dev *d);
-/* 图像基线采样：SetMode Image (0x20 [1,0]) 直接曝光采一帧无手指图像
- * 存入 d->img_base（不进 FDT 判别循环）。
- * 成功返回 0 且 d->img_base_valid=true。 */
+/* Image baseline sampling: SetMode Image (0x20 [1,0]) captures one
+ * no-finger image by direct exposure into d->img_base (it does not enter the
+ * FDT decision loop).
+ * Returns 0 on success with d->img_base_valid=true. */
 int gx_capture_base_image(struct goodix_dev *d);
-/* 新鲜无手指帧：同上直接曝光，存入 d->img_fresh（不动 img_base/goodix.dat）。
- * 采集期间屏蔽事件回调。相对上一可信新鲜帧（无则存档基线）的整体压低量
- * 超过 GOODIX_FRESH_MAXDC（默认 300 计数，满按手指 ~1200）视为手指在上并
- * 丢弃，保留上一可信新鲜帧；尚无新鲜帧时若带通对比度 < GOODIX_FRESH_MAXRIDGE
- * （默认 12）则判为存档基线漂移而采用。返回 0=采用，1=丢弃，<0 失败。 */
+/* Fresh no-finger frame: direct exposure as above, stored in d->img_fresh
+ * (img_base/goodix.dat untouched). Event callbacks are masked during the
+ * capture. If its overall lowering relative to the last trusted fresh frame
+ * (or the saved baseline if there is none) exceeds GOODIX_FRESH_MAXDC
+ * (default 300 counts, a full finger press is ~1200) a finger is assumed to
+ * be on the sensor and the frame is discarded, keeping the last trusted
+ * fresh frame; with no fresh frame yet, a band-pass contrast below
+ * GOODIX_FRESH_MAXRIDGE (default 12) means the saved baseline has drifted
+ * and the frame is used. Returns 0 = used, 1 = discarded, < 0 on failure. */
 int gx_capture_fresh_image(struct goodix_dev *d);
-/* 主机侧手指判别——新帧与无手指基线图像做分块统计比较。
- * img 为解包后的 16bit LE 帧（w*h*2 字节）。
- * 返回：1=手指按下（接受），2=空触发，3=坏帧，
- *       0=温度漂移（需重建基线），-1=无基线可判。 */
+/* Host-side finger detection - per-block statistics of the new frame
+ * compared with the no-finger baseline image.
+ * img is the unpacked 16-bit LE frame (w*h*2 bytes).
+ * Returns: 1 = finger down (accepted), 2 = void trigger, 3 = bad frame,
+ *          0 = temperature drift (baseline must be rebuilt), -1 = no baseline
+ *          to decide with. */
 int gx_fdt_check_finger(struct goodix_dev *d, const uint8_t *img);
-/* 图像预处理（主机侧比对用，非设备协议路径）：gx_imgproc_to8bit /
- * gx_imgproc_params 见 goodix_imgproc.h（文件末尾 include）。 */
-/* 采集事件（gx_capture_set_event_cb 的 event 参数） */
+/* Image preprocessing (for host-side matching, not the device protocol
+ * path): gx_imgproc_to8bit / gx_imgproc_params are in goodix_imgproc.h
+ * (included at the end of this file). */
+/* capture events (the event argument of gx_capture_set_event_cb) */
 enum {
-    GX_EV_FINGER_DOWN = 1,      /* FDT IrqStatus=0x2 推送帧 */
-    GX_EV_FINGER_UP   = 2,      /* FDT IrqStatus=0x200 推送帧 */
+    GX_EV_FINGER_DOWN = 1,      /* FDT IrqStatus=0x2 push frame */
+    GX_EV_FINGER_UP   = 2,      /* FDT IrqStatus=0x200 push frame */
 };
 void gx_capture_set_event_cb(struct goodix_dev *d,
                              void (*cb)(struct goodix_dev *d, int event,
                                         void *user),
                              void *user);
-/* 取消进行中的采集（gx_capture/gx_capture_base_image/gx_wait_finger_up
- * 会在下一个收包周期返回 -4）；下次 gx_capture 自动清零。 */
+/* Cancels a running capture (gx_capture/gx_capture_base_image/
+ * gx_wait_finger_up return -4 at the next receive cycle); cleared
+ * automatically by the next gx_capture. */
 void gx_capture_cancel(struct goodix_dev *d);
-/* FDT UP 布防后等设备推送 IrqStatus=0x200（手指抬起）。
- * 返回 0=抬起；-2=超时；-4=取消。 */
+/* After arming FDT UP, waits for the device to push IrqStatus=0x200 (finger
+ * lifted). Returns 0 = lifted; -2 = timeout; -4 = cancelled. */
 int gx_wait_finger_up(struct goodix_dev *d, int timeout_ms);
 
-/* ---- OTP 解析 + 配置补丁 (goodix_otp.c) ----
- * 用 OTP 工厂校准值补丁 224B 配置表（tcode/fdt delta/fdtOffset/曝光 DAC），
- * 必须在配置下载之前调用。
- * delta_out 回传 FDT delta（默认 21）。返回 1=OTP 有效已补丁。 */
+/* ---- OTP parsing + config patching (goodix_otp.c) ----
+ * Patches the 224B config table with the OTP factory calibration (tcode/fdt
+ * delta/fdtOffset/exposure DAC); must be called before the config download.
+ * delta_out returns the FDT delta (default 21). Returns 1 = OTP valid and
+ * patched. */
 int gx_otp_patch_config(struct goodix_dev *d, uint8_t *cfg, uint8_t *delta_out);
 
-/* ---- FDT 基线持久化 (goodix_base.c) ----
- * Linux 端基线的落盘：文件布局与 goodix.dat 一致
+/* ---- FDT baseline persistence (goodix_base.c) ----
+ * Saving the baseline on the Linux side: same file layout as goodix.dat
  *   [OTP 256B][fdt_base 12B][navbase 3200B][imagebase 10240B][CRC32/MPEG-2]
- * 校验：CRC + OTP 逐字节匹配（不同设备/老化后自动作废）。
- * 学习：FDT IRQ 帧携带设备实测基线（down/up 阈值表）。 */
-/* 状态目录（psk.bin / goodix.dat 的存放处）：
+ * Check: CRC + byte-by-byte OTP match (invalidated automatically on another
+ * device / after aging).
+ * Learning: FDT IRQ frames carry the baseline measured by the device
+ * (down/up threshold tables). */
+/* State directory (where psk.bin / goodix.dat live):
  *   euid==0 -> /var/lib/fprint/goodix
- *     （fprintd 的 systemd 沙箱 ProtectHome=true 会屏蔽 /root 与 /home，
- *      而 /var/lib/fprint 是 fprintd 自身的可写数据目录；
- *      CLI sudo 与 fprintd 因此共享同一份 PSK/基线）
- *   其它    -> $HOME/.config/goodix */
+ *     (fprintd's systemd sandbox, ProtectHome=true, hides /root and /home,
+ *      while /var/lib/fprint is fprintd's own writable data directory; the
+ *      CLI under sudo and fprintd therefore share the same PSK/baseline)
+ *   others  -> $HOME/.config/goodix */
 const char *gx_state_dir(void);
 int  gx_state_dir_ensure(void);
 int  gx_base_load(struct goodix_dev *d);
 int  gx_base_save(struct goodix_dev *d);
-/* 原始 12B 基线合法性检查 */
+/* validity check of a raw 12B baseline */
 int  gx_fdt_base_check(const uint8_t raw[12]);
-/* fdt-up IRQ 原始数据 -> down 阈值表 */
+/* fdt-up IRQ raw data -> down threshold table */
 int  gx_fdt_learn_down_base(struct goodix_dev *d, const uint8_t raw[12]);
-/* fdt-down IRQ 原始数据 -> up 阈值表 */
+/* fdt-down IRQ raw data -> up threshold table */
 int  gx_fdt_learn_up_base(struct goodix_dev *d, const uint8_t raw[12],
                           uint16_t touchflag);
 
-/* ---- 固件更新 (goodix_fwupdate.c) ---- */
+/* ---- firmware update (goodix_fwupdate.c) ---- */
 int gx_fw_update(struct goodix_dev *d, uint8_t evk[64]);
 
 #include "goodix_imgproc.h"

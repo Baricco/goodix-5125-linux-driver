@@ -1,27 +1,29 @@
 /* goodix_init.c - device activation sequence
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
- * 设备初始化序列。仅 OS 层 API（libusb, usleep）不同，其余逻辑与
- * 参考实现一致。
+ * Device initialization sequence. Only the OS-level APIs (libusb, usleep)
+ * differ; the rest of the logic matches the reference implementation.
  *
- * 设备初始化：
- *   device_action(15,{0,0})   BESD 关闭
- *   初始化 MCU
- *   初始化传感器
- *   device_action(15,{1,0})   BESD 开启
+ * Device init:
+ *   device_action(15,{0,0})   BESD off
+ *   init MCU
+ *   init sensor
+ *   device_action(15,{1,0})   BESD on
  *
- * 初始化 MCU：
- *   版本握手重试        （NOP + 0xA8 x N, N=retry_count）
- *   project 8 (ST32)：固件更新（无条件执行）
- *     - 固件更新逻辑：同版本跳过 / 清应用区+复位 / IAP 下载
- *     - 返回固件软复位标记 -> 初始化停止（MCU 重启中）
- *   PSK 处理        （校验主机哈希与 MCU，不一致则写新 PSK）
+ * Init MCU:
+ *   version handshake with retries  (NOP + 0xA8 x N, N=retry_count)
+ *   project 8 (ST32): firmware update (always run)
+ *     - firmware update logic: skip on same version / clear app + reset /
+ *       IAP download
+ *     - returns the firmware soft-reset marker -> init stops (MCU rebooting)
+ *   PSK handling  (checks the host hash against the MCU, writes a new PSK if
+ *                  they differ)
  *
- * 初始化传感器：
- *   复位传感器（SetIdle）
- *   读 ChipID x N（0x82）-> chipid
- *   按 chipid 选择传感器参数
- *   读 OTP (0xA6) -> OTP 解析 -> FDT 初始化 -> 配置下发 (0x90)
+ * Init sensor:
+ *   reset the sensor (SetIdle)
+ *   read ChipID x N (0x82) -> chipid
+ *   pick the sensor parameters by chipid
+ *   read OTP (0xA6) -> parse OTP -> FDT init -> download config (0x90)
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -31,14 +33,17 @@
 
 #define RETRY_COUNT 5
 
-/* 定义见文件末尾：设备重枚举后 close + 轮询 reopen（供 evk 唤醒 L3 用） */
+/* defined at the end of the file: after a device re-enumeration, close +
+ * poll and reopen (used by evk wake-up level L3) */
 static int gx_transport_reopen(struct goodix_dev *d, int max_ms);
 
-/* ================= 配置下发数据表 =================
- * 每类传感器一份 224 字节配置，按类型偏移组织：base + 224*type，
- * 初始化时把对应 224 字节通过 0x90 (cmd0=9 cmd1=0) 下发给 MCU。
- * 每份都是真实配置，绝不是全零——全零等于让 MCU 用错误的曝光/阈值表采集。
- * sensor type 由 chipid 决定。 */
+/* ================= configuration download tables =================
+ * One 224-byte configuration per sensor type, organized by type offset:
+ * base + 224*type; at init the matching 224 bytes are sent to the MCU with
+ * 0x90 (cmd0=9 cmd1=0).
+ * Each one is a real configuration, never all zeros - all zeros would make
+ * the MCU capture with wrong exposure/threshold tables.
+ * The sensor type is determined by the chipid. */
 static const uint8_t gf_config_type2[224] = {   /* MilanG, chipid 0x2208 */
     0x30, 0x11, 0x64, 0x75, 0x00, 0x75, 0x2c, 0xa1, 0x1c, 0xbd, 0x18, 0xd5, 0x00, 0xd5, 0x00, 0xd5,
     0x00, 0xba, 0x00, 0x00, 0x80, 0xca, 0x00, 0x06, 0x00, 0x84, 0x00, 0xbe, 0xb2, 0x86, 0x00, 0xc5,
@@ -104,8 +109,8 @@ static const uint8_t gf_config_type14[224] = {  /* ChicagoT, chipid 0x2505-0x250
     0x00, 0x54, 0x00, 0x00, 0x01, 0x66, 0x00, 0x03, 0x00, 0x7c, 0x00, 0x00, 0xbc, 0x00, 0xbc, 0xff,
 };
 
-/* chipid -> sensor type/geometry/config（按 chipid 选择的 switch +
- * 几何表: [0]=col [1]=row [4]=frame bytes） */
+/* chipid -> sensor type/geometry/config (switch on chipid +
+ * geometry table: [0]=col [1]=row [4]=frame bytes) */
 struct gf_sensor_info {
     uint8_t type;
     uint16_t w, h;
@@ -131,31 +136,31 @@ static const struct gf_sensor_info *gf_sensor_by_chipid(uint16_t chipid)
     return &tbl[idx];
 }
 
-/* ================= 命令辅助函数 ================ */
+/* ================= command helpers ================ */
 
-/* 版本握手重试：N 次尝试后，MCU 软复位 + 重试。
+/* Version handshake with retries: after N attempts, MCU soft reset + retry.
  *
- * 参考流程：
+ * Reference flow:
  *   for i in retry_count:
- *       读版本（NOP + 0xA8）          [ack 100ms, data 500ms, evt 9]
+ *       read version (NOP + 0xA8)          [ack 100ms, data 500ms, evt 9]
  *       if ok: return
- *   全部失败：
- *       MCU 硬复位命令：
- *           0xA2 {2,20}, ack_tmo=0, data_tmo=0, evt=-1（fire & forget）
- *           （{2,20}=复位 MCU，{1,20}=复位传感器）
- *       复位完成后重新读版本
+ *   all failed:
+ *       MCU hard reset command:
+ *           0xA2 {2,20}, ack_tmo=0, data_tmo=0, evt=-1 (fire & forget)
+ *           ({2,20} = reset MCU, {1,20} = reset sensor)
+ *       read the version again after the reset
  *
- * 这是设备的"唤醒"机制：冷插入 / 休眠中的 MCU 在收到 0xA2 {2,20}
- * 软复位之前不会应答 0xA8。
+ * This is the device's "wake-up" mechanism: a freshly plugged / sleeping MCU
+ * does not answer 0xA8 until it receives the 0xA2 {2,20} soft reset.
  */
 static int evk_with_retry(struct goodix_dev *d, uint8_t out[64])
 {
     int r;
 
-    /* 层级 0：仅读版本（NOP + 0xA8），重试 retry_count 次 */
+    /* level 0: version read only (NOP + 0xA8), retry_count attempts */
     for (int i = 0; i < RETRY_COUNT; i++) {
         if (gx_stop_requested(d))
-            return -4;              /* 取消（fprintd stop）：快速退出 */
+            return -4;              /* cancelled (fprintd stop): leave quickly */
         memset(out, 0, 64);
         r = gx_dev_evk(d, out);
         if (r == 0)
@@ -164,7 +169,7 @@ static int evk_with_retry(struct goodix_dev *d, uint8_t out[64])
         usleep(100000);
     }
 
-    /* 层级 1：MCU 软复位 0xA2 {2,20}。唤醒休眠 / 冷启动的 MCU。 */
+    /* level 1: MCU soft reset 0xA2 {2,20}. Wakes up a sleeping / cold MCU. */
     if (gx_stop_requested(d))
         return -4;
     LOG("wake L1: soft-reset MCU (0xA2 {2,20})");
@@ -177,7 +182,7 @@ static int evk_with_retry(struct goodix_dev *d, uint8_t out[64])
         return 0;
     LOG("GetEvkVersion after L1 wake failed (%d)", r);
 
-    /* 层级 2：复位 MCU + 传感器 0xA2 {3,20} */
+    /* level 2: reset MCU + sensor 0xA2 {3,20} */
     if (gx_stop_requested(d))
         return -4;
     LOG("wake L2: soft-reset MCU+sensor (0xA2 {3,20})");
@@ -190,12 +195,14 @@ static int evk_with_retry(struct goodix_dev *d, uint8_t out[64])
         return 0;
     LOG("GetEvkVersion after L2 wake failed (%d)", r);
 
-    /* 层级 3：USB 端口复位（设备加入时主机侧通常会自动执行；
-     * libusb_open 不会）。重新唤醒 MCU 的 USB 外设。
-     * gx_usb_reset 内部会重新做 CDC 激活（端口复位会清掉 DTR），
-     * 否则复位后设备依旧静默丢包；若仍无响应，整体 close + 重开
-     * （重新 detach 内核驱动 / claim / CDC 激活），覆盖复位后
-     * 内核重新绑定 cdc_acm 导致句柄失效的情况。 */
+    /* level 3: USB port reset (the host usually does it when the device is
+     * added; libusb_open does not). Wakes the MCU's USB peripheral again.
+     * gx_usb_reset redoes CDC activation internally (a port reset clears
+     * DTR), otherwise after the reset the device still silently drops
+     * packets; if there is still no answer, a full close + reopen
+     * (detach the kernel driver / claim / CDC activation again) covers the
+     * case where the kernel rebinds cdc_acm after the reset and the handle
+     * becomes invalid. */
     if (gx_stop_requested(d))
         return -4;
     LOG("wake L3: USB port reset + retry");
@@ -217,9 +224,10 @@ static int evk_with_retry(struct goodix_dev *d, uint8_t out[64])
     return -1;
 }
 
-/* 读 OTP：0xA6 {0,0}, evt 8。
- * 有效 OTP 长度按参考实现中的传感器参数表：
- * type 12/14 = 64 字节（设备实际也只回 64B 数据）。 */
+/* read OTP: 0xA6 {0,0}, evt 8.
+ * The valid OTP length comes from the sensor parameter table of the
+ * reference implementation: type 12/14 = 64 bytes (the device really returns
+ * only 64 B of data). */
 static int cmd_read_otp(struct goodix_dev *d, uint8_t *out, uint16_t len)
 {
     uint8_t data[2] = { 0, 0 };
@@ -229,36 +237,36 @@ static int cmd_read_otp(struct goodix_dev *d, uint8_t *out, uint16_t len)
     if (r == 0 && out && rl > 0) {
         uint16_t n = rl < len ? rl : len;
         memcpy(out, rsp, n);
-        d->otp_len = n;         /* 实际有效 OTP 长度（type 12 = 64） */
+        d->otp_len = n;         /* real valid OTP length (type 12 = 64) */
     }
     return r;
 }
 
-/* 配置下发：0x90 config, evt 3（224 字节） */
+/* config download: 0x90 config, evt 3 (224 bytes) */
 static int cmd_download_config(struct goodix_dev *d, const uint8_t *cfg, uint16_t len)
 {
     uint8_t rsp[8]; uint16_t rl = sizeof(rsp);
-    /* 先复位传感器进入 Idle，再下发配置 */
+    /* reset the sensor into Idle first, then download the config */
     gx_dev_reset(d);
     usleep(50000);
     return gx_send_cmd_wait(d, GF_CMD_DOWNLOAD_CONFIG, cfg, len, rsp, &rl, 500);
 }
 
-/* 设置 BESD（device_action 15）：仅本地标志，不下发 USB 命令 */
+/* set BESD (device_action 15): local flag only, no USB command */
 static void cmd_set_besd(struct goodix_dev *d, uint8_t en)
 {
     LOG("SetBesDenable(%d)", en);
     d->besd = en;
 }
 
-/* ================= 初始化 MCU ================================== */
+/* ================= init MCU ================================== */
 
 static int init_mcu(struct goodix_dev *d)
 {
     uint8_t evk[64] = { 0 };
     int r;
 
-    /* 版本握手（带重试） */
+    /* version handshake (with retries) */
     r = evk_with_retry(d, evk);
     if (r < 0) {
         LOG("GetEvkVersion failed - MCU unresponsive");
@@ -267,13 +275,13 @@ static int init_mcu(struct goodix_dev *d)
     LOG("MCU version: %.32s", evk);
     memcpy(d->evk, evk, 64);
 
-    /* 设置驱动状态：0x97 {1,2}，在版本握手之后执行 */
+    /* set driver state: 0x97 {1,2}, after the version handshake */
     gx_set_driver_state(d, 1);
 
-    /* 读 MCU 状态：0xAF {0x55, ts16le, 0, 0}, evt6。
-     * 参考流程每次初始化都会调用；返回 16 字节 MCU 状态，其 byte[1]
-     * 的位标志驱动 POV/采集路径（(state[1] & 2) = pov_valid）。
-     * 这里仅记录用于诊断。 */
+    /* read MCU state: 0xAF {0x55, ts16le, 0, 0}, evt6.
+     * The reference flow calls it on every init; it returns the 16-byte MCU
+     * state, whose byte[1] flags drive the POV/capture path
+     * ((state[1] & 2) = pov_valid). Here it is only logged for diagnosis. */
     {
         uint8_t mcu_state[16] = { 0 };
         int sr = gx_get_mcu_state(d, mcu_state);
@@ -287,12 +295,13 @@ static int init_mcu(struct goodix_dev *d)
         }
     }
 
-    /* project 8 (ST32)：无条件执行固件更新。
-     * 内部逻辑：同版本跳过 / 清应用区+复位 / IAP 下载。 */
+    /* project 8 (ST32): firmware update always runs.
+     * Internal logic: skip on same version / clear app + reset / IAP
+     * download. */
     r = gx_fw_update(d, evk);
     if (r == FW_SOFT_RESET) {
         /* MCU is rebooting into APP; stop init, wait for next run.
-         *（返回固件软复位标记后停止初始化流程）*/
+         * (init stops after the firmware soft-reset marker is returned) */
         LOG("firmware updated, MCU reset - init deferred");
         return FW_SOFT_RESET;
     }
@@ -302,12 +311,15 @@ static int init_mcu(struct goodix_dev *d)
     }
     /* r == 1 (same version) or 0: continue */
 
-    /* PSK 处理：
-     *   1. 校验 PSK 有效性（主机哈希 vs MCU 哈希 0xBB020003），2 次尝试
-     *   2. 无效则写新 PSK（随机 -> WB 加密 -> TLV 0xE0），2 次尝试
-     * 主机侧：PSK 持久化到 0600 权限文件（对应参考实现的缓存文件；
-     * 参考实现用 DPAPI 密封，但 MCU 从不校验密封，因此任意 Linux 存储
-     * 方式都可行：先用文件，后续可选接入 libsecret）。 */
+    /* PSK handling:
+     *   1. check that the PSK is valid (host hash vs MCU hash 0xBB020003),
+     *      2 attempts
+     *   2. if invalid, write a new PSK (random -> WB encryption -> TLV 0xE0),
+     *      2 attempts
+     * Host side: the PSK is persisted in a 0600 file (the equivalent of the
+     * reference implementation's cache file; the reference seals it with
+     * DPAPI, but the MCU never checks the seal, so any Linux storage works:
+     * a file for now, libsecret could be added later). */
     r = -1;
     /* try local store first (avoids MCU read; we wrote it last run).
      * GOODIX_RESET_PSK=1 forces a fresh random PSK + rewrite (use after
@@ -324,16 +336,20 @@ static int init_mcu(struct goodix_dev *d)
     } else {
         LOG("GOODIX_RESET_PSK: ignoring local store, will rewrite");
     }
-    /* 自愈（关键）：本地缓存只是缓存，必须与 MCU 持有同一 PSK，TLS 握手
-     * 才可能成功。用 MCU 哈希（0xBB020003）验证本地缓存：
-     *   - 一致（0）     -> 直接用；
-     *   - 不一致（-6）  -> 缓存过期，丢弃后走"读 MCU / 重写"路径；
-     *     典型场景：CLI（~/.config/goodix）与 fprintd（/var/lib/fprint/
-     *     goodix）分属不同状态目录却共享同一 MCU，后写者覆盖 MCU 的 PSK
-     *     使先写者缓存失效；或 WB 密钥更新后 MCU 仍持旧 blob。若信任过期
-     *     缓存，握手必然 bad_record_mac，
-     *     MCU 进入锁定态，表现为后续 evk 全部超时且无法自愈。
-     *   - 其它错误      -> 传输层暂不可答，保留本地 PSK，下次 init 再校验。 */
+    /* Self-healing (key point): the local cache is only a cache; it must hold
+     * the same PSK as the MCU or the TLS handshake cannot succeed. The local
+     * cache is verified with the MCU hash (0xBB020003):
+     *   - match (0)       -> use it;
+     *   - mismatch (-6)   -> stale cache, dropped, then the "read MCU /
+     *     rewrite" path; typical case: the CLI (~/.config/goodix) and fprintd
+     *     (/var/lib/fprint/goodix) use different state directories but share
+     *     the same MCU, so the last writer overwrites the MCU's PSK and the
+     *     other cache goes stale; or the MCU still holds an old blob after a
+     *     WB key change. Trusting a stale cache always ends in
+     *     bad_record_mac, the MCU locks up and every later evk times out
+     *     with no way to self-heal.
+     *   - other errors    -> the transport cannot answer right now: keep the
+     *     local PSK and check again at the next init. */
     if (r == 0) {
         int vr = gx_psk_verify_mcu_hash(d);
         if (vr == -6) {
@@ -345,8 +361,10 @@ static int init_mcu(struct goodix_dev *d)
     }
     /* Recovery path (no local store / cache expired): try MCU WB read.
      * 0xBB010003 is the WB storage segment (production_write_key 2nd TLV).
-     * 成功即 WB 解密已验证密钥一致，并把 MCU 的 PSK 固化回本地缓存。
-     * GOODIX_RESET_PSK 时跳过读 MCU，强制重写新 PSK（与注释语义一致）。 */
+     * Success means the WB decryption has verified that the keys agree, and
+     * the MCU's PSK is saved back to the local cache.
+     * With GOODIX_RESET_PSK the MCU read is skipped and a new PSK is forced
+     * (as the comment says). */
     if (r != 0 && !getenv("GOODIX_RESET_PSK")) {
         r = gx_psk_read_from_mcu(d);
         if (r == 0)
@@ -385,7 +403,7 @@ static int init_mcu(struct goodix_dev *d)
     return 0;
 }
 
-/* ================= 初始化传感器 =============================== */
+/* ================= init sensor =============================== */
 
 static int init_fpsensor(struct goodix_dev *d)
 {
@@ -393,7 +411,7 @@ static int init_fpsensor(struct goodix_dev *d)
     uint8_t rsp[16];
     int r;
 
-    /* --- 复位传感器进入 Idle --- */
+    /* --- reset the sensor into Idle --- */
     LOG("SetIdle (ResetSensor)");
     r = gx_dev_reset(d);
     if (r < 0) {
@@ -402,7 +420,7 @@ static int init_fpsensor(struct goodix_dev *d)
     }
     usleep(100000);
 
-    /* --- 读 ChipID：寄存器 0x82 读 4 字节 x retry --- */
+    /* --- read ChipID: register 0x82, 4 bytes x retry --- */
     uint16_t chipid = 0;
     for (int i = 0; i < RETRY_COUNT; i++) {
         if (gx_stop_requested(d))
@@ -427,9 +445,10 @@ static int init_fpsensor(struct goodix_dev *d)
         return -1;
     }
 
-    /* --- 按 chipid 选择传感器参数 ---
-     * chipid 决定 sensor type / 几何 / 224B 配置表；未知 chipid 在参考
-     * 实现里走 "wrong senseor type kept" 并视为初始化失败，我们也失败。 */
+    /* --- pick the sensor parameters by chipid ---
+     * The chipid decides the sensor type / geometry / 224 B config table; an
+     * unknown chipid takes the "wrong senseor type kept" path of the
+     * reference implementation and counts as an init failure, and here too. */
     const struct gf_sensor_info *si = gf_sensor_by_chipid(chipid);
     if (!si) {
         LOG("unknown chipid 0x%04x - no sensor config, init fails",
@@ -443,26 +462,28 @@ static int init_fpsensor(struct goodix_dev *d)
     LOG("sensor type %d, %ux%u, frame %u bytes",
         si->type, si->w, si->h, d->img_size);
 
-    /* --- OTP：读 OTP -> OTP 解析 -> FDT 初始化 -> 配置下发 ---
-     * 顺序：读 OTP -> 解析（用 OTP 工厂校准值现场补丁 224B 配置表）
-     * -> FDT 初始化 -> 下发补丁后的配置。不补丁直接发静态表 =
-     * FDT 阈值/曝光全是通用默认值，手指检测不触发。 */
+    /* --- OTP: read OTP -> parse OTP -> FDT init -> download config ---
+     * Order: read OTP -> parse (patch the 224 B config table on the spot
+     * with the OTP factory calibration) -> FDT init -> download the patched
+     * config. Sending the static table unpatched = FDT thresholds/exposure
+     * all at generic defaults, and finger detection never fires. */
     r = cmd_read_otp(d, otp, sizeof(otp));
     if (r == 0) {
         LOG("Success to get OTP data (%d bytes)", (int)d->otp_len);
-        memcpy(d->otp, otp, sizeof(otp));   /* goodix.dat 的绑定凭据 */
-        /* 基线存在性检查：加载 FDT 基线（CRC+OTP 校验） */
+        memcpy(d->otp, otp, sizeof(otp));   /* binding credential of goodix.dat */
+        /* baseline presence check: load the FDT baseline (CRC + OTP check) */
         gx_base_load(d);
-        /* OTP 解析：用 OTP 补丁配置表（tcode/delta/offset/DAC） */
+        /* OTP parsing: patch the config table from the OTP
+         * (tcode/delta/offset/DAC) */
         {
             uint8_t cfg[224];
             memcpy(cfg, si->config, sizeof(cfg));
-            d->fdt_delta = 21;              /* 参考实现默认值 */
+            d->fdt_delta = 21;              /* reference implementation defaults */
             if (gx_otp_patch_config(d, cfg, &d->fdt_delta))
                 LOG("OTP parsed, config patched (fdt_delta=%u)",
                     d->fdt_delta);
             LOG("OTP data valid, download config");
-            /* 配置下发 224B：发送补丁后的配置 */
+            /* download the 224 B config: send the patched config */
             r = cmd_download_config(d, cfg, sizeof(cfg));
         }
         d->have_config = (r == 0);
@@ -476,7 +497,7 @@ static int init_fpsensor(struct goodix_dev *d)
     return 0;
 }
 
-/* ================= 设备初始化（总入口） ========================== */
+/* ================= device init (main entry point) ========================== */
 
 static int device_init(struct goodix_dev *d)
 {
@@ -498,22 +519,25 @@ static int device_init(struct goodix_dev *d)
     return 0;
 }
 
-/* ================= 顶层初始化流程 ============================== */
+/* ================= top-level init flow ============================== */
 
-/* MCU 硬复位（0xA2 {2,20}）后 USB 设备会重新枚举：先从总线消失几百毫秒，
- * 再以（可能不同的）PID 重新出现。参考实现此时会关闭并重新打开设备。
- * 复位后我们的 libusb 句柄已失效（LIBUSB_ERROR_NO_DEVICE），
- * 因此关闭句柄并轮询直到设备重新出现，再重新打开（claim + CDC activate）。 */
+/* After an MCU hard reset (0xA2 {2,20}) the USB device re-enumerates: it
+ * disappears from the bus for a few hundred milliseconds, then comes back
+ * with a (possibly different) PID. The reference implementation closes and
+ * reopens the device at this point. After the reset our libusb handle is
+ * invalid (LIBUSB_ERROR_NO_DEVICE), so the handle is closed and we poll
+ * until the device reappears, then reopen it (claim + CDC activate). */
 static int gx_transport_reopen(struct goodix_dev *d, int max_ms)
 {
     gx_transport_close(d);
-    /* MCU 复位后可能以不同 PID 重新枚举（见上方注释）：扫描任一。
-     * gx_transport_open 匹配成功后会把 d->pid 更新为实际 PID。 */
+    /* After an MCU reset the device may re-enumerate with a different PID (see
+     * the comment above): scan for either.
+     * When gx_transport_open matches it updates d->pid to the real PID. */
     d->pid = 0;
     int waited = 0;
     while (waited < max_ms) {
         if (gx_stop_requested(d))
-            return -4;              /* 取消：不再等设备重新枚举 */
+            return -4;              /* cancelled: stop waiting for the re-enumeration */
         usleep(200000);
         waited += 200;
         if (gx_transport_open(d) == 0) {
@@ -536,9 +560,10 @@ int gx_device_init(struct goodix_dev *d)
             LOG("device init cancelled");
             return -4;
         }
-        /* evk 唤醒 L3 的 reopen 失败会把传输层关掉（usb_devh=NULL）；
-         * 下次重试前先重新打开，避免带着空句柄继续跑（见 transport.c
-         * 的 NULL 防护，这里是主动恢复）。 */
+        /* A failed reopen during evk wake-up L3 closes the transport
+         * (usb_devh=NULL); reopen before the next retry instead of carrying
+         * on with a null handle (see the NULL guard in transport.c; this is
+         * the active recovery). */
         if (!d->usb_devh && gx_transport_open(d) != 0) {
             LOG("device gone, cannot reopen transport");
             return -1;
@@ -547,8 +572,9 @@ int gx_device_init(struct goodix_dev *d)
         if (r == 0)
             break;
         if (r == FW_SOFT_RESET) {
-            /* 固件更新后 MCU 重启，参考实现会停止初始化。
-             * USB 设备将重新枚举，必须重新打开。 */
+            /* After a firmware update the MCU restarts and the reference
+             * implementation stops init. The USB device will re-enumerate
+             * and must be reopened. */
             LOG("soft reset marker, waiting for MCU reboot + re-enum...");
             usleep(1000000);
             if (gx_transport_reopen(d, 8000) < 0) {
@@ -572,12 +598,12 @@ int gx_device_init(struct goodix_dev *d)
 
     LOG("Init Device Success");
 
-    /* --- TLS 握手（仅当存在 PSK 时）---
-     * gx_tls_server_init: OpenSSL 上下文建立
-     * gx_tls_handshake:    服务端握手(0xD1) -> OpenSSL 握手 ->
-     *                      握手命令下发(0xD4) -> 读 MCU 状态 bit1
-     * 参考实现会重试整个序列。这里只执行一次；
-     * 失败时调用方可重新调用 gx_device_init。 */
+    /* --- TLS handshake (only when there is a PSK) ---
+     * gx_tls_server_init: sets up the OpenSSL context
+     * gx_tls_handshake:   server handshake (0xD1) -> OpenSSL handshake ->
+     *                     handshake command (0xD4) -> read MCU state bit1
+     * The reference implementation retries the whole sequence. Here it runs
+     * once; on failure the caller may call gx_device_init again. */
     if (d->have_psk && !getenv("GOODIX_NO_TLS")) {
         r = gx_tls_server_init(d);
         if (r == 0) {
@@ -589,13 +615,16 @@ int gx_device_init(struct goodix_dev *d)
         LOG("TLS skipped (GOODIX_NO_TLS) - testing plaintext capture");
     }
 
-    /* --- "Init: update all base..."（TLS 握手之后）---
-     * 无基线文件时，参考实现会更新全部基线：FDT-manual (0x36)
-     * 让 MCU 现场采样无手指 FDT 基线，随后直接曝光采一帧无手指
-     * 图像基线，一并存 goodix.dat。没有真实基线表时 FDT down 布防
-     * 不会报手指事件，没有图像基线时主机侧手指判别无法进行，所以
-     * 这两步是首次采集的前提。（此时传感器上不能有手指——参考实现
-     * 同样假设。） */
+    /* --- "Init: update all base..." (after the TLS handshake) ---
+     * Without a baseline file the reference implementation updates every
+     * baseline: FDT-manual (0x36) makes the MCU sample the no-finger FDT
+     * baseline on the spot, then one no-finger image baseline is captured by
+     * direct exposure, and both are saved to goodix.dat. Without a real
+     * baseline table FDT-down arming reports no finger events, and without
+     * an image baseline host-side finger detection cannot work, so these two
+     * steps are a prerequisite of the first capture. (There must be no
+     * finger on the sensor at this point - the reference implementation
+     * assumes the same.) */
     if (d->fp_inited && !d->base_valid) {
         LOG("no FDT base, sampling via FDT-manual");
         if (gx_fdt_sample_base(d) == 0) {

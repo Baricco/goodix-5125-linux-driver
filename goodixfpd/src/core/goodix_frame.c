@@ -1,32 +1,34 @@
-/* goodix_frame.c - 帧层（明文命令帧 / TLS 帧 / 响应帧的封装与解析）
+/* goodix_frame.c - frame layer (building and parsing plaintext command frames,
+ * TLS frames and response frames)
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
- * == 明文命令帧 ==
- *   [0]    = 0xA0（类型；低半字节保留上一次的值，首次为 0）
- *   [1:2]  = 载荷长度 LE = datalen + 4
- *            （载荷 = cmd[1] + len[2] + data[datalen] + cks[1]）
- *   [3]    = 帧头校验和：(b0 + b1 + b2) & 0xFF
- *   [4]    = 命令字节：(cmd0<<4)|(cmd1<<1)  [仅不等待 ACK 时 |1]
+ * == Plaintext command frame ==
+ *   [0]    = 0xA0 (type; the low nibble keeps the previous value, 0 the first time)
+ *   [1:2]  = payload length LE = datalen + 4
+ *            (payload = cmd[1] + len[2] + data[datalen] + cks[1])
+ *   [3]    = header checksum: (b0 + b1 + b2) & 0xFF
+ *   [4]    = command byte: (cmd0<<4)|(cmd1<<1)  [|1 only when not waiting for an ACK]
  *   [5:6]  = datalen + 1 (LE)
- *   [7..]  = 数据
- *   [末]   = 数据校验和：0xAA - (sum(data) + (dlen+1) + ((dlen+1)>>8) + cmd)
- *   总长   = datalen + 8
+ *   [7..]  = data
+ *   [last] = data checksum: 0xAA - (sum(data) + (dlen+1) + ((dlen+1)>>8) + cmd)
+ *   total  = datalen + 8
  *
- * == TLS 帧（类型 0xB）==
+ * == TLS frame (type 0xB) ==
  *   [0]    = 0xB0
- *   [1:2]  = TLS 记录长度 (LE)   <- 载荷 = 原始 TLS 记录
- *   [3]    = 帧头校验和
- *   [4..]  = TLS 记录（帧级无末尾校验和：载荷直接交给 TLS 层）
+ *   [1:2]  = TLS record length (LE)   <- payload = raw TLS record
+ *   [3]    = header checksum
+ *   [4..]  = TLS record (no trailing checksum at frame level: the payload goes
+ *            straight to the TLS layer)
  *
- * == 响应帧 ==
- *   [0]    = 0xA0|0xB0|0xC0（类型，高半字节 0xA/0xB/0xC）
- *   [1:2]  = 载荷长度 LE；总长 = 载荷 + 4
- *   [3]    = 帧头校验和
- *   [4]    = 响应命令字节（type<<4|sub<<1|more）
- *   [5:6]  = 数据长度 LE
- *   [7..]  = 数据（+ 末尾校验和或 0x88）
+ * == Response frame ==
+ *   [0]    = 0xA0|0xB0|0xC0 (type, high nibble 0xA/0xB/0xC)
+ *   [1:2]  = payload length LE; total = payload + 4
+ *   [3]    = header checksum
+ *   [4]    = response command byte (type<<4|sub<<1|more)
+ *   [5:6]  = data length LE
+ *   [7..]  = data (+ trailing checksum or 0x88)
  *
- * 传输：按 64 字节块发送，每块补齐到 64 字节。
+ * Transport: sent in 64-byte chunks, each padded to 64 bytes.
  */
 #include <stdlib.h>
 #include <string.h>
@@ -35,8 +37,9 @@
 static inline uint8_t hdr_cks(uint8_t a, uint8_t b, uint8_t c)
 { return (uint8_t)(a + b + c); }
 
-/* 数据校验和：0xAA - (sum(data) + (len+1) + ((len+1)>>8) + cmd)
- * 校验和用不含 more 位的命令字节，故 cks_cmd = cmd & 0xFE。 */
+/* Data checksum: 0xAA - (sum(data) + (len+1) + ((len+1)>>8) + cmd)
+ * The checksum uses the command byte without the more bit, so
+ * cks_cmd = cmd & 0xFE. */
 static inline uint8_t data_cks(uint8_t cmd, const uint8_t *data, uint16_t len)
 {
     uint8_t s = (uint8_t)((cmd & 0xFE) + (len + 1) + ((len + 1) >> 8));
@@ -45,7 +48,7 @@ static inline uint8_t data_cks(uint8_t cmd, const uint8_t *data, uint16_t len)
     return (uint8_t)(0xAA - s);
 }
 
-/* 将缓冲区按 64B 零填充块发送 */
+/* Sends the buffer in zero-padded 64 B chunks */
 static int usb_send_chunks(struct goodix_dev *d, const uint8_t *frame, uint16_t total)
 {
     uint16_t off = 0;
@@ -63,7 +66,7 @@ static int usb_send_chunks(struct goodix_dev *d, const uint8_t *frame, uint16_t 
     return 0;
 }
 
-/* 发送明文命令帧 */
+/* Sends a plaintext command frame */
 int gx_send_cmd_frame(struct goodix_dev *d, uint8_t cmd,
                       const uint8_t *data, uint16_t datalen)
 {
@@ -94,7 +97,7 @@ int gx_send_cmd_frame(struct goodix_dev *d, uint8_t cmd,
     return r;
 }
 
-/* 发送 TLS 帧：[0xB0][rlen][cks][TLS 记录]（无末尾校验和） */
+/* Sends a TLS frame: [0xB0][rlen][cks][TLS record] (no trailing checksum) */
 int gx_send_tls_frame(struct goodix_dev *d, const uint8_t *record, uint16_t rlen)
 {
     uint8_t *frame;
@@ -118,9 +121,9 @@ int gx_send_tls_frame(struct goodix_dev *d, const uint8_t *record, uint16_t rlen
     return r;
 }
 
-/* 读取一帧（A0/B0/C0），重组 64B 块。
- * 帧头 [1:2] = 载荷长度；总长 = 载荷 + 4。
- * 调用方缓冲区必须 >= MAX_FRAME。 */
+/* Reads one frame (A0/B0/C0), reassembling the 64 B chunks.
+ * Header [1:2] = payload length; total = payload + 4.
+ * The caller's buffer must be >= MAX_FRAME. */
 int gx_read_frame(struct goodix_dev *d, uint8_t *frame, uint16_t *len, int tmo)
 {
     uint8_t buf[64];
@@ -134,8 +137,10 @@ int gx_read_frame(struct goodix_dev *d, uint8_t *frame, uint16_t *len, int tmo)
             deadline -= 100;
             continue;
         }
-        /* 非进展路径同样消耗预算：每次读最多阻塞 100ms。若只对错误路径
-         * 扣减，噪声帧/半包会让本函数实际超时无上界（可远大于 tmo）。 */
+        /* The non-progress path consumes the budget too: every read blocks for
+         * up to 100 ms. If only the error path were charged, noise frames or
+         * half packets would make the real timeout of this function unbounded
+         * (possibly far beyond tmo). */
         if (r < 4) {
             deadline -= 100;
             continue;
@@ -180,25 +185,26 @@ int gx_read_frame(struct goodix_dev *d, uint8_t *frame, uint16_t *len, int tmo)
     return -1;
 }
 
-/* 发送 NOP 命令：发送 (dev, 0, 0, {0,0,0,0}, 4, 0, 0)
- *   cmd0=0 cmd1=0, a7=0 -> more=1, a6=0 -> 无校验和 (0x88)。
- *   帧：A0 08 00 A8 01 05 00 00 00 00 00 88  （pcap 报文 17 验证）
- * 在读取 EVK 版本 / 设置驱动状态 / 读取 MCU 状态之前发送。
+/* Sends the NOP command: send (dev, 0, 0, {0,0,0,0}, 4, 0, 0)
+ *   cmd0=0 cmd1=0, a7=0 -> more=1, a6=0 -> no checksum (0x88).
+ *   Frame: A0 08 00 A8 01 05 00 00 00 00 00 88  (verified on pcap packet 17)
+ * Sent before reading the EVK version / setting the driver state / reading
+ * the MCU state.
  */
 int gx_send_nop(struct goodix_dev *d)
 {
     uint8_t frame[12];
     frame[0]  = 0xA0;
-    frame[1]  = 8;            /* 载荷长度 datalen+4 */
+    frame[1]  = 8;            /* payload length datalen+4 */
     frame[2]  = 0;
-    frame[3]  = (uint8_t)(0xA0 + 8);   /* 帧头校验和 */
-    frame[4]  = 0x01;         /* 命令：more=1 */
-    frame[5]  = 5;            /* 数据长度 datalen+1 */
+    frame[3]  = (uint8_t)(0xA0 + 8);   /* header checksum */
+    frame[4]  = 0x01;         /* command: more=1 */
+    frame[5]  = 5;            /* data length datalen+1 */
     frame[6]  = 0;
-    frame[7]  = 0;            /* 4 个零数据字节 */
+    frame[7]  = 0;            /* 4 zero data bytes */
     frame[8]  = 0;
     frame[9]  = 0;
     frame[10] = 0;
-    frame[11] = 0x88;         /* 无校验和标志：0x88 尾部 */
+    frame[11] = 0x88;         /* no-checksum marker: trailing 0x88 */
     return usb_send_chunks(d, frame, sizeof(frame));
 }

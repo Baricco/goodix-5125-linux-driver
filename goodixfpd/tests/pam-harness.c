@@ -1,10 +1,10 @@
-/* pam-harness.c - esegue pam_authenticate con una configurazione PAM di
- * prova (pam_start_confdir), senza root e senza toccare /etc/pam.d.
+/* pam-harness.c - runs pam_authenticate with a test PAM configuration
+ * (pam_start_confdir), without root and without touching /etc/pam.d.
  *
- *   pam-harness <servizio> <utente> <dir-config>
+ *   pam-harness <service> <user> <config-dir>
  *
- * I messaggi del modulo escono su stdout ("info: ..." / "error: ..."), poi
- * "result: <PAM_*>". Exit 0 solo con PAM_SUCCESS.
+ * The module's messages go to stdout ("info: ..." / "error: ..."), then
+ * "result: <PAM_*>". Exit 0 only with PAM_SUCCESS.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -17,7 +17,7 @@ conv (int n, const struct pam_message **msg, struct pam_response **resp, void *d
   for (int i = 0; i < n; i++)
     printf ("%s: %s\n", msg[i]->msg_style == PAM_ERROR_MSG ? "error" : "info", msg[i]->msg);
   fflush (stdout);
-  /* solo messaggi informativi/di errore: nessuna risposta da restituire */
+  /* only informational/error messages: no answer to return */
   *resp = NULL;
   return PAM_SUCCESS;
 }

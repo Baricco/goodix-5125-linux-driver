@@ -6,17 +6,18 @@
  *     iface 0: CDC comm (EP 0x82 INT-IN 8B)   - notifications
  *     iface 1: CDC data (EP 0x01 BULK-OUT 64B
  *                        EP 0x81 BULK-IN  64B) - all command/data traffic
- *   接口选择（参考实现 usbhal.c）:
+ *   Interface choice (reference implementation usbhal.c):
  *     bulk write pipe = iface1 EP 0x01
  *     bulk read  pipe = iface1 EP 0x81
  *     interrupt pipe  = iface0 EP 0x82 (notifications only)
  *
- * CDC-ACM 设备在数据端点激活前需要 SET_LINE_CODING 与
- * SET_CONTROL_LINE_STATE (DTR) 控制请求；参考实现同样如此，
- * 这里复现该行为以保证全新设备能应答命令。
+ * A CDC-ACM device needs the SET_LINE_CODING and SET_CONTROL_LINE_STATE (DTR)
+ * control requests before its data endpoints become active; the reference
+ * implementation does the same, and it is reproduced here so that a brand
+ * new device answers commands.
  */
 #include <libusb-1.0/libusb.h>
-#include <unistd.h>        /* usleep（gx_usb_reset 复位后等待） */
+#include <unistd.h>        /* usleep (wait after the gx_usb_reset reset) */
 #include "goodix.h"
 
 int gx_debug = 0;   /* set via GOODIX_DEBUG=1 */
@@ -51,9 +52,10 @@ static int claim_iface(libusb_device_handle *h, int iface)
  *   libusb_detach_kernel_driver() we take the interface back WITHOUT
  *   DTR, so the device falls back to an inactive state and silently
  *   drops every bulk command - exactly the zero-RX behavior seen.
- *   抓包记录在设备已被激活之后才进行（首帧是运行中的检测循环 0x32，
- *   而非初始化序列），因此看不到 CDC 控制请求——更早的激活发生在
- *   抓包窗口之外。
+ *   The capture was recorded after the device had already been activated
+ *   (the first frame is the running detection loop 0x32, not the init
+ *   sequence), so the CDC control requests are not visible - the earlier
+ *   activation happened outside the capture window.
  *   We therefore must send the same two CDC control requests ourselves.
  */
 static int cdc_activate(libusb_device_handle *h, int iface)
@@ -141,7 +143,7 @@ int gx_transport_open(struct goodix_dev *d)
 
     cnt = libusb_get_device_list(ctx, &list);
     if (cnt < 0) {
-        libusb_exit(ctx);       /* 失败也要释放 ctx，避免泄漏 */
+        libusb_exit(ctx);       /* free ctx on failure too, to avoid a leak */
         d->usb_ctx = NULL;
         return (int)cnt;
     }
@@ -156,7 +158,7 @@ int gx_transport_open(struct goodix_dev *d)
             if (libusb_open(list[i], (libusb_device_handle **)&d->usb_devh) == 0) {
                 libusb_device_handle *h = (libusb_device_handle *)d->usb_devh;
                 d->pid = dd.idProduct;
-                /* 占用两个 CDC 接口（comm + data） */
+                /* claim both CDC interfaces (comm + data) */
                 r = claim_iface(h, GF_IFACE_COMM);
                 if (r == 0)
                     r = claim_iface(h, GOODIX_IFACE_DATA);
@@ -182,14 +184,17 @@ int gx_transport_open(struct goodix_dev *d)
 }
 
 
-/* USB 复位：参考实现（WDF）在设备添加时复位端口（端口复位发生在
- * 参考实现的 USB 初始化中）。libusb 打开时不会复位端口，因此
- * 冷启动设备（挂起后）可能需要一次复位来唤醒 MCU 的 USB 外设。
+/* USB reset: the reference implementation (WDF) resets the port when the
+ * device is added (the port reset happens in its USB initialization).
+ * libusb does not reset the port on open, so a cold device (after suspend)
+ * may need one reset to wake up the MCU's USB peripheral.
  *
- * 注意：端口复位会清除 CDC 激活状态（SET_LINE_CODING + DTR）——不重新
- * 激活，设备数据端点会再次静默丢弃所有命令（与初始"零响应"同一根因，
- * 见 cdc_activate 的注释）。因此复位成功后必须重新做 CDC 激活，否则
- * 唤醒层级 L3 在 "usb reset done" 之后仍会一直 GetEvkVersion 超时。 */
+ * Note: a port reset clears the CDC activation (SET_LINE_CODING + DTR) -
+ * without reactivation the device's data endpoints silently drop every
+ * command again (same root cause as the initial "zero response", see the
+ * cdc_activate comment). So after a successful reset CDC activation must be
+ * redone, otherwise wake-up level L3 keeps timing out on GetEvkVersion after
+ * "usb reset done". */
 int gx_usb_reset(struct goodix_dev *d)
 {
     int r;
@@ -200,7 +205,7 @@ int gx_usb_reset(struct goodix_dev *d)
         LOG("usb reset failed: %s", libusb_error_name(r));
     else {
         LOG("usb reset done");
-        usleep(200000);   /* 等设备重新枚举稳定 */
+        usleep(200000);   /* wait for the device to re-enumerate and settle */
         cdc_activate((libusb_device_handle *)d->usb_devh, GF_IFACE_COMM);
     }
     return r;
@@ -208,7 +213,7 @@ int gx_usb_reset(struct goodix_dev *d)
 
 void gx_transport_close(struct goodix_dev *d)
 {
-    gx_tls_free(d);     /* 句柄关闭后 TLS 会话已无意义 */
+    gx_tls_free(d);     /* once the handle is closed the TLS session is meaningless */
     if (d->usb_devh) {
         libusb_release_interface((libusb_device_handle *)d->usb_devh, GOODIX_IFACE_DATA);
         libusb_release_interface((libusb_device_handle *)d->usb_devh, GF_IFACE_COMM);
@@ -225,8 +230,9 @@ int gx_usb_write(struct goodix_dev *d, const uint8_t *b, size_t n)
 {
     int x = 0;
     int r;
-    /* 设备可能在任何时刻被拔出（或 L3 唤醒的 reopen 失败后句柄已关）。
-     * 把 NULL 传给 libusb 是未定义行为（会崩），必须先挡掉。 */
+    /* The device can be unplugged at any time (or the handle is already
+     * closed after a failed L3 wake-up reopen). Passing NULL to libusb is
+     * undefined behaviour (it crashes), so it must be stopped first. */
     if (!d->usb_devh)
         return LIBUSB_ERROR_NO_DEVICE;
     r = libusb_bulk_transfer((libusb_device_handle *)d->usb_devh,

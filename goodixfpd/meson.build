@@ -30,7 +30,7 @@ add_project_arguments(
   language: 'c',
 )
 
-# ---- core del sensore (protocollo, TLS, immagine, SIFT/SIGFM) ----
+# ---- sensor core (protocol, TLS, imaging, SIFT/SIGFM) ----
 core_inc = include_directories('src/core')
 core_lib = static_library('gxcore',
   'src/core/goodix_base.c',
@@ -56,7 +56,7 @@ core_dep = declare_dependency(
   dependencies: [usb_dep, ssl_dep, crypto_dep, m_dep],
 )
 
-# ---- servizio ----
+# ---- service ----
 dbus_src = gnome.gdbus_codegen('fprintd-dbus',
   sources: [
     'src/daemon/net.reactivated.Fprint.Manager.xml',
@@ -99,7 +99,7 @@ goodixfpd = executable('goodixfpd',
   install_dir: get_option('libexecdir'),
 )
 
-# Stesso servizio con il sensore simulato: solo per i test, mai installato.
+# Same service with the simulated sensor: for the tests only, never installed.
 goodixfpd_test = executable('goodixfpd-test',
   daemon_src, 'src/daemon/gxd-sensor-test.c',
   c_args: ['-DGXD_TEST_BACKEND'],

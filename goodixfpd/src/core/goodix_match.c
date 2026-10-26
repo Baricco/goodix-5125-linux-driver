@@ -1,4 +1,5 @@
-/* goodix_match.c - SIGFM 比对的纯 C 实现（语义同 sigfm_match_score）
+/* goodix_match.c - plain C implementation of SIGFM matching (same semantics
+ * as sigfm_match_score)
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -7,12 +8,14 @@
 #include <string.h>
 #include "goodix_match.h"
 
-#define DISTANCE_MATCH   0.75   /* Lowe 比值检验 */
-#define LENGTH_MATCH     0.05   /* 成对长度相对误差 */
-#define ANGLE_MATCH      0.05   /* 旋转角编码相对误差 */
+#define DISTANCE_MATCH   0.75   /* Lowe ratio test */
+#define LENGTH_MATCH     0.05   /* relative error of pairwise lengths */
+#define ANGLE_MATCH      0.05   /* relative error of the rotation-angle encoding */
 #define MIN_MATCH        5
-/* 两端关键点几乎在同一传感器像素上的对应来自固定图案（逐像素增益/基线
- * 残影），跨手指也会以完美几何一致匹配；真实的两次按压不会亚像素重合。 */
+/* Correspondences whose two keypoints sit on almost the same sensor pixel come
+ * from the fixed pattern (per-pixel gain/baseline residue) and match with
+ * perfect geometry even across fingers; two real presses never coincide to
+ * sub-pixel precision. */
 #define MIN_DISPLACEMENT 2.0
 
 #define FEATSET_MAGIC    0x31534647u   /* "GFS1" */
@@ -20,7 +23,7 @@
 #define FEAT_REC_LEN     (8 + GX_SIFT_DESC_LEN)
 
 struct corr {
-    int x1, y1, x2, y2;     /* cvRound 后的坐标（同 cv::Point2i） */
+    int x1, y1, x2, y2;     /* coordinates after cvRound (as cv::Point2i) */
 };
 
 struct angle {
@@ -47,7 +50,8 @@ static float desc_dist(const uint8_t *a, const uint8_t *b)
     return sqrtf((float)s);
 }
 
-/* 相对误差 1 - min/max <= tol；含 NaN 时为假（同原 C++ 浮点语义） */
+/* relative error 1 - min/max <= tol; false when NaN is involved (same
+ * floating-point semantics as the original C++) */
 static inline int rel_close(double a, double b, double tol)
 {
     double mn = a < b ? a : b, mx = a < b ? b : a;
@@ -67,7 +71,7 @@ int gx_match_score(const struct gx_featset *query, const struct gx_featset *trai
     if (!m)
         return -1;
 
-    /* 2-NN + 比值检验 + 位移过滤 */
+    /* 2-NN + ratio test + displacement filter */
     for (uint32_t q = 0; q < query->n; q++) {
         float d1 = INFINITY, d2 = INFINITY;
         uint32_t best = 0;
@@ -99,13 +103,13 @@ int gx_match_score(const struct gx_featset *query, const struct gx_featset *trai
     if (nb_matched < MIN_MATCH)
         goto out;
 
-    /* 去重（std::set 语义） */
+    /* deduplication (std::set semantics) */
     qsort(m, nm, sizeof(*m), corr_cmp);
     for (size_t i = 0; i < nm; i++)
         if (nu == 0 || corr_cmp(&m[nu - 1], &m[i]) != 0)
             m[nu++] = m[i];
 
-    /* 成对长度一致 -> 旋转角编码 */
+    /* consistent pairwise length -> rotation-angle encoding */
     ang = malloc((nu * (nu - 1) / 2 + 1) * sizeof(*ang));
     if (!ang) {
         count = -1;
@@ -127,7 +131,7 @@ int gx_match_score(const struct gx_featset *query, const struct gx_featset *trai
     if (na < MIN_MATCH)
         goto out;
 
-    /* 角度一致的对计数 */
+    /* count of pairs with consistent angles */
     for (size_t j = 0; j < na; j++)
         for (size_t k = j + 1; k < na; k++)
             if (rel_close(ang[j].s, ang[k].s, ANGLE_MATCH) &&

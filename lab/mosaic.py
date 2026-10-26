@@ -1,26 +1,26 @@
 #!/usr/bin/env python3
-"""Ricostruzione a mosaico dell'impronta da scansioni che si sovrappongono (Goodix 5125).
+"""Mosaic reconstruction of the fingerprint from overlapping scans (Goodix 5125).
 
-Idea: mappando in movimento, scansioni adiacenti hanno uno spostamento piccolo ma reale. Si stima
-la roto-traslazione tra coppie (coverage.estimate_offset), si costruisce un grafo di pose, si
-posizionano le scansioni di ogni componente connessa in un sistema comune (albero di copertura dal
-nodo di grado massimo) e si fondono le immagini in un composito. La maschera di copertura rivela i
-BUCHI: aree dentro l'inviluppo della mappa non coperte da nessuna scansione -> guidano la mappatura.
+Idea: when mapping in motion, adjacent scans have a small but real displacement. The rotation
+plus translation between pairs is estimated (coverage.estimate_offset), a pose graph is built,
+the scans of every connected component are placed in a common frame (spanning tree from the node
+of highest degree) and the images are fused into a composite. The coverage mask reveals the
+HOLES: areas inside the envelope of the map not covered by any scan -> they guide the mapping.
 
-Lavora su una lista di (feats, thumb) dove feats=(pts,desc) e thumb e' l'immagine preprocessata
-(H,W) uint8 di quella scansione. Niente scala (stesso sensore): roto-traslazione pura."""
+Works on a list of (feats, thumb) where feats=(pts,desc) and thumb is the preprocessed (H,W)
+uint8 image of that scan. No scaling (same sensor): pure rotation plus translation."""
 
 import numpy as np
 import cv2
 
 import coverage
 
-MIN_INLIERS = 7       # inlier RANSAC minimi per fidarsi di un collegamento tra due scansioni
+MIN_INLIERS = 7       # minimum RANSAC inliers to trust a link between two scans
 H, W = 64, 80
 
 
 def build_graph(items):
-    """items: lista di (feats, thumb). -> dict edge (i,j)->(M 2x3 che porta j su i, inlier)."""
+    """items: list of (feats, thumb). -> dict edge (i,j)->(M 2x3 taking j onto i, inliers)."""
     n = len(items)
     edges = {}
     for i in range(n):
@@ -38,7 +38,7 @@ def build_graph(items):
 def _neighbors(edges, n):
     adj = {k: [] for k in range(n)}
     for (i, j), (M, inl) in edges.items():
-        adj[i].append((j, _invert(M), inl))   # per andare da i a j serve M^-1? vedi sotto
+        adj[i].append((j, _invert(M), inl))   # going from i to j needs M^-1? see below
         adj[j].append((i, M, inl))
     return adj
 
@@ -51,7 +51,7 @@ def _invert(M):
 
 
 def _compose(A, B):
-    """A,B 2x3 affini; ritorna A∘B (applica B poi A)."""
+    """A,B 2x3 affine; returns A∘B (applies B, then A)."""
     Ra, ta = A[:, :2], A[:, 2]
     Rb, tb = B[:, :2], B[:, 2]
     return np.hstack([Ra @ Rb, (Ra @ tb + ta).reshape(2, 1)]).astype(np.float32)
@@ -76,9 +76,9 @@ def components(edges, n):
 
 
 def place_component(comp, edges):
-    """Posiziona le scansioni di una componente in coordinate comuni (albero dal nodo piu' connesso).
-    -> dict node -> M (2x3) che porta le coordinate del nodo nel sistema comune."""
-    # adiacenza con trasformazione node->vicino
+    """Places the scans of a component in common coordinates (tree from the most connected node).
+    -> dict node -> M (2x3) taking the node's coordinates into the common frame."""
+    # adjacency with the node->neighbour transformation
     adj = {k: [] for k in comp}
     for (i, j), (M, inl) in edges.items():
         if i in adj and j in adj:
@@ -89,19 +89,19 @@ def place_component(comp, edges):
     st = [root]
     while st:
         p = st.pop()
-        for (q, M_qp) in adj[p]:        # M_qp: p->q ... costruiamo q->root
+        for (q, M_qp) in adj[p]:        # M_qp: p->q ... we build q->root
             if q in T:
                 continue
-            # vogliamo q->root. Abbiamo p->root (T[p]) e una M che lega p e q.
-            # adj memorizza (vicino, trasf p->vicino). Serve vicino->root = T[p] ∘ (p->vicino)^-1? no:
-            # se M_qp porta p su q (p->q), allora q->p = inv(M_qp), e q->root = T[p] ∘ (q->p).
+            # we want q->root. We have p->root (T[p]) and an M linking p and q.
+            # adj stores (neighbour, transform p->neighbour). Do we need neighbour->root = T[p] ∘ (p->neighbour)^-1? no:
+            # if M_qp takes p onto q (p->q), then q->p = inv(M_qp), and q->root = T[p] ∘ (q->p).
             T[q] = _compose(T[p], _invert(M_qp))
             st.append(q)
     return T, root
 
 
 def render(items, comp, T, margin=40):
-    """Fonde le thumbnail della componente nel composito. -> (mosaic u8, coverage count, bbox)."""
+    """Fuses the component's thumbnails into the composite. -> (mosaic u8, coverage count, bbox)."""
     corners = np.array([[0, 0], [W, 0], [W, H], [0, H]], np.float32)
     allpts = []
     for k in comp:
@@ -128,9 +128,9 @@ def render(items, comp, T, margin=40):
 
 
 def holes(cnt):
-    """Buchi = aree dentro l'inviluppo della copertura ma non coperte. -> (mask_holes, frazione)."""
+    """Holes = areas inside the coverage envelope but not covered. -> (mask_holes, fraction)."""
     covered = (cnt > 0).astype(np.uint8)
-    # inviluppo: chiusura morfologica + fill dei contorni esterni
+    # envelope: morphological closing + fill of the outer contours
     k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
     envelope = cv2.morphologyEx(covered, cv2.MORPH_CLOSE, k)
     cnts, _ = cv2.findContours(envelope, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)

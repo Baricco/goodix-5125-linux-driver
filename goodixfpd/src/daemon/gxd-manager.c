@@ -1,8 +1,8 @@
 /* gxd-manager.c - net.reactivated.Fprint.Manager.
  *
- * Come fprintd: il Manager sta in /net/reactivated/Fprint/Manager, i
- * dispositivi sono esportati da un ObjectManager su /net/reactivated/Fprint.
- * Qui il dispositivo e' uno solo, /net/reactivated/Fprint/Device/0.
+ * As in fprintd: the Manager lives at /net/reactivated/Fprint/Manager, the
+ * devices are exported by an ObjectManager on /net/reactivated/Fprint.
+ * Here there is a single device, /net/reactivated/Fprint/Device/0.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */

@@ -1,50 +1,50 @@
-# Sicurezza
+# Security
 
-Il login a impronta cambia *come* ti autentichi, non *cosa* protegge i tuoi dati.
-Per una postura "come Windows" servono tre livelli, indipendenti tra loro.
+Fingerprint login changes *how* you authenticate, not *what* protects your
+data. A Windows-like posture takes three independent layers.
 
-## Livello 1 — Autenticazione a impronta (questo progetto)
+## Layer 1 — Fingerprint authentication (this project)
 
-`pam_fprintd` su `sudo`, greeter e lockscreen. L'impronta è un **gate sì/no**: non
-rilascia chiavi. Il resto del sistema resta protetto dalle sue credenziali come
-prima. Config con fallback password (`auth sufficient`) → nessun lock-out.
+`pam_fprintd` on `sudo`, the greeter and the lock screen. The fingerprint is a
+**yes/no gate**: it does not release any key. The rest of the system stays
+protected by its own credentials as before. Configured with password fallback
+(`auth sufficient`) → no lockout.
 
-Il servizio `goodixfpd` gira come fprintd (root, sandbox di `fprintd.service`)
-e applica le stesse regole polkit: chi può verificare, registrare, o agire su un
-altro utente. Le impronte sono descrittori SIFT, non immagini, in
-`/var/lib/fprint/goodixfpd/<utente>/` (file 0600, cartelle 0700); un file vale
-solo per l'utente e il dito del suo percorso. L'apprendimento con l'uso aggiunge
-solo tocchi riconosciuti con margine doppio e non sostituisce mai i frame della
-registrazione (`GOODIX_LEARN=0` lo spegne).
+The `goodixfpd` service runs like fprintd (root, inside the
+`fprintd.service` sandbox) and enforces the same polkit rules: who may verify,
+enroll, or act on another user. Fingerprints are SIFT descriptors, not images,
+stored in `/var/lib/fprint/goodixfpd/<user>/` (0600 files, 0700 directories);
+a file is valid only for the user and finger of its own path. Learning with use
+adds only touches recognized with a double margin and never replaces the
+enrollment frames (`GOODIX_LEARN=0` turns it off).
 
-## Livello 2 — Sblocco del keyring via TPM (opzionale)
+## Layer 2 — Keyring unlock via TPM (optional)
 
-`service/keyring-tpm/`. Con il login a impronta, `gnome-keyring` non riceve la
-password e resterebbe bloccato. La password del keyring viene **sigillata nel
-TPM**, legata a **Secure Boot (PCR 7)**, e sbloccata al login. È il modo in cui
-Windows evita di richiedere di nuovo le credenziali. **Richiede Secure Boot
-attivo** (`docs/secure-boot.md`), altrimenti il sigillo PCR 7 non protegge.
-Fallback: se il TPM rifiuta, il keyring chiede la password come sempre.
+`service/keyring-tpm/`. With fingerprint login, `gnome-keyring` does not
+receive the password and would stay locked. The keyring password is **sealed
+in the TPM**, bound to **Secure Boot (PCR 7)**, and unsealed at login. This is
+how Windows avoids asking for credentials again. **It requires Secure Boot to
+be enabled** (`docs/secure-boot.md`), otherwise the PCR 7 seal protects
+nothing. Fallback: if the TPM refuses, the keyring asks for the password as
+usual.
 
-## Livello 3 — Cifratura del disco (LUKS + TPM) — **consigliata, non inclusa**
+## Layer 3 — Disk encryption (LUKS + TPM) — **recommended, not included**
 
-Il login a impronta e lo sblocco del keyring **non** proteggono i dati a riposo:
-chi ha il portatile può leggere il disco. Per protezione reale serve **LUKS**,
-sigillato al TPM come BitLocker. Non è parte di questi script (un installer di
-driver non deve cifrare il disco altrui): si fa con strumenti di sistema.
+Fingerprint login and keyring unlock do **not** protect data at rest: whoever
+has the laptop can read the disk. Real protection needs **LUKS**, optionally
+sealed to the TPM like BitLocker. It is not part of these scripts (a driver
+installer must not encrypt someone else's disk): it is done with system tools.
 
-Si può fare **in-place senza reinstallare** con `cryptsetup reencrypt --encrypt`
-(solo la partizione root; `/boot` resta in chiaro), e si auto-sblocca all'avvio
-con `systemd-cryptenroll --tpm2-device=auto --tpm2-pcrs=7`. Avvertenze:
+The safest moment is **when installing the system**: every distribution
+installer can set up an encrypted root. Converting an existing installation in
+place (`cryptsetup reencrypt --encrypt`) is possible, but it rewrites the
+whole partition and changes the boot chain: if anything goes wrong the system
+no longer boots. Do it only with a **complete, verified backup** and a way to
+boot from USB. With TPM auto-unlock (`systemd-cryptenroll --tpm2-pcrs=7`),
+always keep a passphrase or recovery key as well: a firmware or Secure Boot
+change alters PCR 7 and the TPM stops unlocking.
 
-- **Fai un backup dei dati irrecuperabili prima.** La reencryption riscrive tutta
-  la partizione; è resumabile ma non a rischio zero.
-- Tieni **sempre** una passphrase oltre al TPM: un update di firmware/Secure Boot
-  cambia PCR 7 e il TPM non sblocca più → la passphrase evita il lock-out.
-- Usa lo **stesso meccanismo PCR** del Livello 2, quindi va fatto con Secure Boot
-  già attivo per avere senso.
+## Reporting vulnerabilities
 
-## Divulgazione di vulnerabilità
-
-Problemi di sicurezza: aprire una issue privata / contattare il maintainer prima
-della divulgazione pubblica.
+Security problems: open a private security advisory on GitHub or contact the
+maintainer before any public disclosure.

@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""Enroll a MOSAICO INCREMENTALE per il Goodix 5125.
+"""INCREMENTAL MOSAIC enrollment for the Goodix 5125.
 
-A differenza del modello a punti (enroll_engine), qui si costruisce una mappa unica cucendo le
-scansioni man mano. Per ogni frame in arrivo si tenta la registrazione (roto-traslazione) sui
-keyframe recenti/vicini della mappa:
-  - si aggancia (inlier >= REG_MIN) e si e' spostato abbastanza -> ESTENDE la mappa (nuovo keyframe);
-  - si aggancia ma quasi fermo -> gia' coperto;
-  - non si aggancia -> CONTATTO PERSO (l'utente ha saltato): non si estende, si avvisa di tornare
-    indietro. Cosi' la mappa resta connessa e i buchi emergono dalla copertura.
+Unlike the point model (enroll_engine), here a single map is built by stitching the scans as
+they come. For every incoming frame registration (rotation plus translation) is attempted on the
+recent/nearby keyframes of the map:
+  - it locks (inliers >= REG_MIN) and has moved enough -> it EXTENDS the map (new keyframe);
+  - it locks but has barely moved -> already covered;
+  - it does not lock -> CONTACT LOST (the user jumped): the map is not extended and the user is
+    told to go back. This way the map stays connected and the holes emerge from the coverage.
 
-Fornisce il composito live (immagine cucita), la mappa di copertura e i buchi (mosaic.holes), e una
-verifica che usa lo score SIGFM (quello che ha dato 0 falsi positivi) piu' gli inlier di
-registrazione come segnale geometrico.
+It provides the live composite (stitched image), the coverage map and the holes (mosaic.holes),
+and a verification that uses the SIGFM score (the one that gave 0 false positives) plus the
+registration inliers as a geometric signal.
 """
 
 import numpy as np
@@ -24,10 +24,10 @@ from preprocessor import preprocess
 
 W, H = 80, 64
 CANVAS = 520
-REG_MIN = 8          # inlier minimi per agganciare un frame alla mappa
-SPACING = 9          # px minimi di spostamento per aggiungere un keyframe (densita' del mosaico)
-RECENT = 10          # quanti keyframe recenti provare prima di cercare in tutta la mappa
-VERIFY_MIN = 300     # soglia SIGFM di accettazione (= enroll_engine.ACCEPT)
+REG_MIN = 8          # minimum inliers to lock a frame onto the map
+SPACING = 9          # minimum px of displacement to add a keyframe (mosaic density)
+RECENT = 10          # how many recent keyframes to try before searching the whole map
+VERIFY_MIN = 300     # SIGFM acceptance threshold (= enroll_engine.ACCEPT)
 
 
 class MosaicSession:
@@ -39,7 +39,7 @@ class MosaicSession:
         self.origin = np.array([[1, 0, CANVAS / 2 - W / 2],
                                 [0, 1, CANVAS / 2 - H / 2]], np.float32)
 
-    # ---- geometria ----
+    # ---- geometry ----
     def _center(self, pose):
         c = np.array([W / 2, H / 2, 1.0])
         return (pose @ c).astype(np.float32)
@@ -57,7 +57,7 @@ class MosaicSession:
         self._blend(thumb, pose)
 
     def _register(self, feats, candidates):
-        """Miglior aggancio di feats su un sottoinsieme di keyframe. -> (kf, M new->kf, inl) o None."""
+        """Best lock of feats on a subset of keyframes. -> (kf, M new->kf, inl) or None."""
         best = None
         for kf in candidates:
             ok, M, inl = coverage.estimate_affine(kf["feats"], feats)
@@ -73,14 +73,14 @@ class MosaicSession:
             return {"status": "debole", "placed": False, "n": len(self.keyframes)}
         if not self.keyframes:
             self._add_kf(feats, img, np.array([[1, 0, 0], [0, 1, 0]], np.float32))
-            return {"status": "inizio mappa", "placed": True, "n": 1, "thumb": img}
+            return {"status": "map started", "placed": True, "n": 1, "thumb": img}
 
-        # prima i recenti, poi (se serve) tutti
+        # the recent ones first, then (if needed) all of them
         best = self._register(feats, self.keyframes[-RECENT:])
         if best is None:
             best = self._register(feats, self.keyframes[:-RECENT])
         if best is None:
-            return {"status": "contatto perso — torna dove eri", "placed": False,
+            return {"status": "contact lost — go back to where you were", "placed": False,
                     "n": len(self.keyframes), "thumb": img}
 
         kf, M, inl = best
@@ -88,13 +88,13 @@ class MosaicSession:
         center = self._center(pose)
         dmin = min(np.hypot(*(center[:2] - k["center"][:2])) for k in self.keyframes)
         if dmin < SPACING:
-            return {"status": "già coperto qui", "placed": False,
+            return {"status": "already covered here", "placed": False,
                     "n": len(self.keyframes), "inl": inl, "thumb": img}
         self._add_kf(feats, img, pose)
-        return {"status": "mappa estesa", "placed": True, "new": True,
+        return {"status": "map extended", "placed": True, "new": True,
                 "n": len(self.keyframes), "inl": inl, "thumb": img}
 
-    # ---- resa / buchi ----
+    # ---- rendering / holes ----
     def render(self, margin=10):
         ys, xs = np.where(self.cnt > 0)
         if len(xs) == 0:
@@ -111,7 +111,7 @@ class MosaicSession:
         _, cnt = self.render()
         return mz.holes(cnt)
 
-    # ---- verifica ----
+    # ---- verification ----
     def verify(self, frame, threshold=VERIFY_MIN):
         feats = sigfm.features(preprocess(frame, self.clear))
         best_score, best_inl = 0, 0
@@ -124,7 +124,7 @@ class MosaicSession:
                 best_inl = inl
         return best_score >= threshold, best_score, best_inl
 
-    # ---- persistenza ----
+    # ---- persistence ----
     def save(self, path):
         pts = np.vstack([k["feats"][0].astype(np.float32) for k in self.keyframes])
         desc = np.vstack([k["feats"][1].astype(np.float32) for k in self.keyframes])

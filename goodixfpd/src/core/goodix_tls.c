@@ -1,25 +1,27 @@
-/* goodix_tls.c - OpenSSL PSK TLS server（memory BIO）
+/* goodix_tls.c - OpenSSL PSK TLS server (memory BIO)
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
- * 设备以 TLS 客户端身份连接，主机作服务端：
- *   - PSK identity："Client_identity"
- *   - 密码套件：TLS-PSK-WITH-AES-128-GCM-SHA256（0x00A8，仅 TLS1.2）
- *   - 无证书、无 identity hint（因此不发 ServerKeyExchange）
- *   - TLS 记录经帧层 0xB0 USB 帧收发
+ * The device connects as the TLS client, the host acts as the server:
+ *   - PSK identity: "Client_identity"
+ *   - cipher suite: TLS-PSK-WITH-AES-128-GCM-SHA256 (0x00A8, TLS 1.2 only)
+ *   - no certificate, no identity hint (so no ServerKeyExchange is sent)
+ *   - TLS records travel in 0xB0 USB frames of the frame layer
  *
- * 握手流程：
- *   1. 建立 SSL server 上下文 + 两个 memory BIO（rbio：设备发来的记录，
- *      wbio：发往设备的记录）
- *   2. TLS server 初始化命令（0xD1 {0,0}）-> 设备发送 ClientHello
- *   3. 循环 SSL_do_handshake() 直到完成；每条输出记录单独装一个 0xB0 帧
- *      （与原 mbedtls 实现的发送粒度一致）
- *   4. TLS 握手命令（0xD4 {0,0}）
- *   5. 读 MCU 状态（0xAF）-> bit1=1 表示 TLS 已连接；bit3=1 锁定 -> 重发命令
- *   6. 标记 tls_inited
+ * Handshake:
+ *   1. create the SSL server context + two memory BIOs (rbio: records coming
+ *      from the device, wbio: records going to the device)
+ *   2. TLS server init command (0xD1 {0,0}) -> the device sends ClientHello
+ *   3. loop on SSL_do_handshake() until done; every output record goes in its
+ *      own 0xB0 frame (same send granularity as the old mbedtls version)
+ *   4. TLS handshake command (0xD4 {0,0})
+ *   5. read the MCU state (0xAF) -> bit1=1 means TLS connected; bit3=1
+ *      locked -> resend the command
+ *   6. mark tls_inited
  *
- * 采集模式（gx_tls_capture_mode(1)）下为混合通道：A0 明文帧进入
- * goodix_capture.c 的分流路径，B0 帧经 gx_tls_feed() 注入、
- * gx_tls_recv() 取出解密数据。
+ * In capture mode (gx_tls_capture_mode(1)) the channel is mixed: A0
+ * plaintext frames go to the dispatch path of goodix_capture.c, B0 frames are
+ * injected through gx_tls_feed() and the decrypted data is taken out with
+ * gx_tls_recv().
  */
 #include <stdlib.h>
 #include <stdio.h>
@@ -33,16 +35,16 @@
 #define GX_TLS_IDENTITY     "Client_identity"
 #define GX_TLS_CIPHER       "PSK-AES128-GCM-SHA256"
 #define GX_TLS_REC_HDR      5
-#define GX_TLS_MAX_FRAME_REC 0x3FFF     /* 保持在 MAX_FRAME 内 */
+#define GX_TLS_MAX_FRAME_REC 0x3FFF     /* stays within MAX_FRAME */
 
 struct gx_tls_ctx {
     SSL_CTX *ctx;
     SSL *ssl;
-    BIO *rbio;              /* 设备 -> OpenSSL 的记录 */
-    BIO *wbio;              /* OpenSSL -> 设备的记录 */
-    int rx_no_usb;          /* 采集模式：TLS 层不自己读 USB */
-    uint8_t frame[MAX_FRAME];   /* 握手期的 USB 帧缓冲 */
-    uint8_t out[MAX_FRAME];     /* 待发送记录 */
+    BIO *rbio;              /* records device -> OpenSSL */
+    BIO *wbio;              /* records OpenSSL -> device */
+    int rx_no_usb;          /* capture mode: the TLS layer does not read USB itself */
+    uint8_t frame[MAX_FRAME];   /* USB frame buffer during the handshake */
+    uint8_t out[MAX_FRAME];     /* records waiting to be sent */
 };
 
 static void log_ssl_errors(const char *what)
@@ -75,8 +77,9 @@ static unsigned int psk_server_cb(SSL *ssl, const char *identity,
     return (unsigned int)d->psk_len;
 }
 
-/* 把 wbio 中 OpenSSL 产生的数据发给设备：每条 TLS 记录一个 0xB0 帧，
- * 每帧后延时 10ms，给设备时间处理 TLS 记录。 */
+/* Sends the data OpenSSL produced in wbio to the device: one 0xB0 frame per
+ * TLS record, with a 10 ms pause after each frame to give the device time to
+ * process the record. */
 static int flush_out(struct goodix_dev *d)
 {
     struct gx_tls_ctx *t = d->tls;
@@ -109,8 +112,9 @@ static int flush_out(struct goodix_dev *d)
     return 0;
 }
 
-/* 握手期读一帧 USB，把其中的 TLS 记录交给 OpenSSL。
- * 0 = 收到帧（非 TLS 帧忽略）；-1 = 超时内无数据。 */
+/* During the handshake, reads one USB frame and hands its TLS records to
+ * OpenSSL. 0 = frame received (non-TLS frames ignored); -1 = no data within
+ * the timeout. */
 static int pull_in(struct goodix_dev *d)
 {
     struct gx_tls_ctx *t = d->tls;
@@ -140,10 +144,10 @@ static int new_bios(struct gx_tls_ctx *t)
         t->rbio = t->wbio = NULL;
         return -1;
     }
-    /* memory BIO 为空时返回"重试"而非 EOF */
+    /* an empty memory BIO returns "retry" instead of EOF */
     BIO_set_mem_eof_return(t->rbio, -1);
     BIO_set_mem_eof_return(t->wbio, -1);
-    SSL_set_bio(t->ssl, t->rbio, t->wbio);   /* 所有权移交给 SSL */
+    SSL_set_bio(t->ssl, t->rbio, t->wbio);   /* ownership handed to SSL */
     return 0;
 }
 
@@ -153,7 +157,7 @@ void gx_tls_free(struct goodix_dev *d)
 
     if (!t)
         return;
-    SSL_free(t->ssl);           /* 同时释放两个 BIO */
+    SSL_free(t->ssl);           /* frees both BIOs */
     SSL_CTX_free(t->ctx);
     OPENSSL_cleanse(t, sizeof(*t));
     free(t);
@@ -194,8 +198,8 @@ int gx_tls_server_init(struct goodix_dev *d)
     t->ctx = SSL_CTX_new(TLS_server_method());
     if (!t->ctx)
         goto fail;
-    /* 将版本锁定为 TLS1.2：0x00A8 仅存在于 TLS1.2（TLS1.3 无纯 PSK
-     * 套件），设备发送的是 TLS1.2 ClientHello。 */
+    /* Pin the version to TLS 1.2: 0x00A8 exists only in TLS 1.2 (TLS 1.3
+     * has no pure PSK suite), and the device sends a TLS 1.2 ClientHello. */
     if (!SSL_CTX_set_min_proto_version(t->ctx, TLS1_2_VERSION) ||
         !SSL_CTX_set_max_proto_version(t->ctx, TLS1_2_VERSION))
         goto fail;
@@ -238,8 +242,8 @@ int gx_tls_handshake(struct goodix_dev *d)
     r = gx_tls_server_cmd(d);
     LOG("TLSServerInit cmd ret=%d", r);
 
-    /* 命令后设备发送 ClientHello。限制在约 30 秒墙钟时间内，
-     * 避免永远挂起。 */
+    /* After the command the device sends ClientHello. Bounded to about 30
+     * seconds of wall-clock time so it never hangs forever. */
     t0 = time(NULL);
     while (time(NULL) - t0 < 30) {
         int hr = SSL_do_handshake(t->ssl);
@@ -253,9 +257,10 @@ int gx_tls_handshake(struct goodix_dev *d)
         }
         if (err != SSL_ERROR_WANT_READ && err != SSL_ERROR_WANT_WRITE) {
             log_ssl_errors("TLS handshake");
-            /* 收尾：重发 TLS 握手命令，给 MCU 一次解锁机会（state bit3
-             * 锁定态会阻塞后续 evk/init）。PSK 不匹配等根因由 init 的
-             * PSK 自愈路径处理。 */
+            /* Wrap-up: resend the TLS handshake command to give the MCU a chance
+             * to unlock (the state bit3 lock blocks the following evk/init).
+             * Root causes such as a PSK mismatch are handled by the PSK
+             * self-healing path of init. */
             usleep(10000);
             gx_tls_handshake_cmd(d);
             return -1;
@@ -299,8 +304,10 @@ int gx_tls_handshake(struct goodix_dev *d)
     return -3;
 }
 
-/* TLS 重连：设备通过 0xDA 明文帧主动要求重建 TLS，或读取 MCU 状态发现
- * bit1(isTlsConnected)=0 时由 host 发起。清空会话与 BIO 后重跑完整握手。 */
+/* TLS reconnection: the device asks to rebuild TLS with a 0xDA plaintext
+ * frame, or the host starts it when the MCU state shows
+ * bit1 (isTlsConnected) = 0. The session and BIOs are cleared and the full
+ * handshake runs again. */
 int gx_tls_reconnect(struct goodix_dev *d)
 {
     struct gx_tls_ctx *t = d->tls;
@@ -317,7 +324,8 @@ int gx_tls_reconnect(struct goodix_dev *d)
     return gx_tls_handshake(d);
 }
 
-/* 读取解密后的应用数据：>0 = 字节数；<0 = 暂无数据或出错。 */
+/* Reads decrypted application data: > 0 = number of bytes; < 0 = no data
+ * yet or error. */
 int gx_tls_recv(struct goodix_dev *d, uint8_t *data, size_t cap, int tmo)
 {
     struct gx_tls_ctx *t = d->tls;
@@ -331,6 +339,6 @@ int gx_tls_recv(struct goodix_dev *d, uint8_t *data, size_t cap, int tmo)
         return n;
     if (SSL_get_error(t->ssl, n) != SSL_ERROR_WANT_READ)
         log_ssl_errors("TLS read");
-    flush_out(d);       /* 可能有发往设备的 alert */
+    flush_out(d);       /* there may be an alert to send to the device */
     return -1;
 }

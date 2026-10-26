@@ -1,25 +1,36 @@
-/* goodix_imgproc.c - 图像预处理参数化管线（16bit 帧 -> 8bit 灰度）
+/* goodix_imgproc.c - parameterized image preprocessing pipeline (16-bit frame
+ * -> 8-bit grayscale)
  *
- * 各环节可经 struct gx_imgproc_params / GOODIX_IMGPROC_* 环境变量调整，
- * 用于真机标定。
+ * Every stage can be tuned through struct gx_imgproc_params /
+ * GOODIX_IMGPROC_* environment variables, for calibration on the real device.
  *
- * 管线（每帧调用，无 static 缓冲，可重入；dump 序号例外，仅调试用）：
- *   1) baseline  可选减无手指基线：v = offset + raw - base，clamp [0,4095]。
- *      2048 余量提供对称空间，避免半波整流/饱和；基线无效时直接用原帧。
- *   2) flatfield 可选去低频背景：可分离盒式均值（半径远大于脊距，只移除
- *      接触压力造成的缓慢亮度梯度），v = clamp(v - lowf + mean_all, 0, 4095)，
- *      同步累计直方图（mean_all 为平场前的均值，与原实现运算顺序一致）。
- *   3) stretch   pct_lo/pct_hi 百分位截断映射到 0..255（hi<=lo 回退全量程）。
- *   4) enhance   可选反锐化局部对比增强（SIGFM/SIFT 定向）：对 8bit 输出
- *      out = clamp(in + boost*(in - gauss(in,σ)))。SIGFM 的 sigfm_extract()
- *      用 SIFT 默认 contrastThreshold=0.04，弱脊/轻触下关键点常低于 fork 的
- *      25 个下限——本环节提升脊谷局部对比度，可提高关键点通过率。
- *      反锐化同时放大噪点，默认关闭（GX_IMGPROC_ENHANCE_NONE），
- *      靠 SIGFM 的几何一致性投票过滤假关键点。
+ * Pipeline (called per frame, no static buffers, reentrant; the dump counter
+ * is the exception, debug only):
+ *   1) baseline  optional subtraction of the no-finger baseline:
+ *      v = offset + raw - base, clamped to [0,4095]. The 2048 headroom gives
+ *      symmetric room and avoids half-wave rectification/saturation; without
+ *      a valid baseline the raw frame is used.
+ *   2) flatfield optional removal of the low-frequency background: separable
+ *      box mean (radius much larger than the ridge spacing, it only removes
+ *      the slow brightness gradient caused by contact pressure),
+ *      v = clamp(v - lowf + mean_all, 0, 4095), accumulating the histogram at
+ *      the same time (mean_all is the mean before the flat field, same order
+ *      of operations as the original implementation).
+ *   3) stretch   pct_lo/pct_hi percentile clipping mapped to 0..255
+ *      (hi <= lo falls back to the full range).
+ *   4) enhance   optional unsharp-mask local contrast boost (aimed at
+ *      SIGFM/SIFT): on the 8-bit output
+ *      out = clamp(in + boost*(in - gauss(in,σ))). SIGFM's sigfm_extract()
+ *      uses SIFT's default contrastThreshold=0.04, and with weak ridges or
+ *      light touches the keypoints often fall below the fork's minimum of 25
+ *      - this stage raises the local ridge/valley contrast and lets more
+ *      keypoints through. The unsharp mask also amplifies noise, so it is off
+ *      by default (GX_IMGPROC_ENHANCE_NONE), and SIGFM's geometric-consistency
+ *      voting filters out the false keypoints.
  *
- * 调试：GOODIX_DUMP_IMGPROC=1 时把各阶段写到 gx_state_dir() 下
- *   imgproc-<seq>-<stage>.pgm（raw8/base8/flat8/final8/enh8），
- *   16bit 中间态按 v>>4 转 8bit 输出。
+ * Debug: with GOODIX_DUMP_IMGPROC=1 every stage is written under
+ *   gx_state_dir() as imgproc-<seq>-<stage>.pgm (raw8/base8/flat8/final8/enh8);
+ *   16-bit intermediate states are written as 8-bit using v>>4.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -28,7 +39,7 @@
 #include <math.h>
 #include "goodix.h"
 
-#define IMGPROC_PX_MAX   4095            /* 12bit 像素有效上界 */
+#define IMGPROC_PX_MAX   4095            /* upper bound of valid 12-bit pixels */
 #define IMGPROC_CLAMP16(v) ((v) < 0 ? 0 : (v) > IMGPROC_PX_MAX ? IMGPROC_PX_MAX : (v))
 
 static inline uint16_t imgproc_px16(const uint8_t *img, uint32_t idx)
@@ -36,9 +47,12 @@ static inline uint16_t imgproc_px16(const uint8_t *img, uint32_t idx)
     return (uint16_t)(img[2 * idx] | (img[2 * idx + 1] << 8));
 }
 
-/* ---- 可分离盒式均值（水平+垂直一维前缀和，半径 r，边界复制）----
- * 用于低频亮度场估计。原实现用 static 缓冲且按 GF_IMG_MAX/2 硬编码尺寸，
- * 这里改为每次调用按实际 w*h 动态分配，保证可重入。返回 0 成功、-1 分配失败。 */
+/* ---- separable box mean (horizontal + vertical 1D prefix sums, radius r,
+ * replicated border) ----
+ * Used to estimate the low-frequency brightness field. The original
+ * implementation used static buffers with a size hard-coded to GF_IMG_MAX/2;
+ * here the buffers are allocated per call for the actual w*h, so it is
+ * reentrant. Returns 0 on success, -1 on allocation failure. */
 static int boxmean(const uint16_t *in, uint16_t *out,
                    uint32_t w, uint32_t h, int r)
 {
@@ -53,7 +67,7 @@ static int boxmean(const uint16_t *in, uint16_t *out,
         free(ps);
         return -1;
     }
-    /* 水平 pass */
+    /* horizontal pass */
     for (y = 0; y < h; y++) {
         const uint16_t *row = &in[y * w];
         ps[0] = 0;
@@ -65,7 +79,7 @@ static int boxmean(const uint16_t *in, uint16_t *out,
             tmp[y * w + x] = (ps[x1 + 1] - ps[x0]) / (x1 - x0 + 1);
         }
     }
-    /* 垂直 pass */
+    /* vertical pass */
     for (x = 0; x < w; x++) {
         ps[0] = 0;
         for (y = 0; y < h; y++)
@@ -81,9 +95,10 @@ static int boxmean(const uint16_t *in, uint16_t *out,
     return 0;
 }
 
-/* ---- stage 1: 有符号基线相减 ----
- * use_baseline 且 d->img_base_valid 时 v = offset + raw - base（clamp）；
- * 否则直接用原帧（等价原实现的无基线分支）。 */
+/* ---- stage 1: signed baseline subtraction ----
+ * With use_baseline and d->img_base_valid, v = offset + raw - base (clamped);
+ * otherwise the raw frame is used (equivalent to the original
+ * implementation's no-baseline branch). */
 static void stage_baseline(const struct goodix_dev *d, const uint8_t *img16,
                            uint16_t *buf, int use_baseline, uint16_t offset)
 {
@@ -100,10 +115,12 @@ static void stage_baseline(const struct goodix_dev *d, const uint8_t *img16,
     }
 }
 
-/* ---- stage 2: 低频平场校正 + 直方图累计 ----
- * mean_all 来自平场前的 buf 均值（与原实现顺序一致）；clamp 后 buf[i]
- * 必在 [0,4095]，直方图索引无需掩码。返回 0 成功、-1 分配失败（调用方
- * 回退为"无平场"直方图路径，输出仍合法）。 */
+/* ---- stage 2: low-frequency flat-field correction + histogram ----
+ * mean_all is the mean of buf before the flat field (same order as the
+ * original implementation); after clamping buf[i] is always in [0,4095], so
+ * the histogram index needs no mask. Returns 0 on success, -1 on allocation
+ * failure (the caller falls back to the "no flat field" histogram path and
+ * the output is still valid). */
 static int stage_flatfield(uint16_t *buf, uint32_t w, uint32_t h, int r,
                            uint32_t *hist)
 {
@@ -130,10 +147,11 @@ static int stage_flatfield(uint16_t *buf, uint32_t w, uint32_t h, int r,
     return 0;
 }
 
-/* ---- stage 3: 百分位截断 -> 0..255 ----
- * pct_lo/pct_hi 定义保留区间 [pct_lo%, pct_hi%]：底部截断 pct_lo%、
- * 顶部截断 (100-pct_hi)%。原实现向下扫描用 npix/100（顶部累计 1%），
- * 即默认 pct_hi=99 等价顶部截断 1%。 */
+/* ---- stage 3: percentile clipping -> 0..255 ----
+ * pct_lo/pct_hi define the kept range [pct_lo%, pct_hi%]: pct_lo% clipped at
+ * the bottom, (100-pct_hi)% at the top. The original implementation scanned
+ * downwards with npix/100 (1% accumulated at the top), i.e. the default
+ * pct_hi=99 equals clipping 1% at the top. */
 static void stage_stretch(const uint16_t *buf, uint8_t *out8,
                           uint32_t npix, const uint32_t *hist,
                           uint8_t pct_lo, uint8_t pct_hi)
@@ -174,8 +192,9 @@ static void stage_stretch(const uint16_t *buf, uint8_t *out8,
     }
 }
 
-/* ---- stage 4: 可选反锐化（SIGFM 定向，8bit 域）----
- * out = clamp(in + boost*(in - gauss(in,σ)))，可分离高斯、边界复制。 */
+/* ---- stage 4: optional unsharp mask (aimed at SIGFM, 8-bit domain) ----
+ * out = clamp(in + boost*(in - gauss(in,σ))), separable Gaussian, replicated
+ * border. */
 static void gaussian_blur_u8(const uint8_t *in, uint8_t *out,
                              uint32_t w, uint32_t h, float sigma)
 {
@@ -205,7 +224,7 @@ static void gaussian_blur_u8(const uint8_t *in, uint8_t *out,
     for (int i = 0; i < klen; i++)
         k[i] /= ksum;
 
-    /* 水平 pass（边界复制） */
+    /* horizontal pass (replicated border) */
     for (y = 0; y < h; y++) {
         const uint8_t *row = &in[y * w];
         for (x = 0; x < w; x++) {
@@ -221,7 +240,7 @@ static void gaussian_blur_u8(const uint8_t *in, uint8_t *out,
             tmp[y * w + x] = (uint8_t)(acc + 0.5f);
         }
     }
-    /* 垂直 pass */
+    /* vertical pass */
     for (x = 0; x < w; x++) {
         for (y = 0; y < h; y++) {
             float acc = 0.0f;
@@ -258,14 +277,19 @@ static void stage_enhance(const uint8_t *in, uint8_t *out,
 }
 
 /* ================= GX_IMGPROC_MODE_RIDGE =================
- * 背景：本传感器的 (raw - base) 除了脊谷信号外还带一个固定于像素网格的
- * 残影（逐像素/逐列增益 x 手指整体压低量，及基线漂移），弱按压时它在
- * 百分位拉伸后占满整幅图，SIFT 关键点全落在残影上 -> 不同手指互相匹配。
- * 本管线全程浮点（不做 4095 截断），用 DoG 带通只保留脊距频段
- * （σ1≈1 去像素噪声，σ2≈4 去残影/压力的低频分量），可选按基线形状回归
- * 去除增益残影，再拉伸 + CLAHE 均衡局部对比度。参数与离线标定
- * （tools/fp_tune）的 OpenCV/numpy 参考实现一致：高斯核长 round(8σ+1)|1、
- * 边界 reflect-101、百分位线性插值、CLAHE 同 OpenCV 算法。 */
+ * Background: besides the ridge/valley signal, this sensor's (raw - base)
+ * carries a residue fixed to the pixel grid (per-pixel/per-column gain x the
+ * overall lowering caused by the finger, plus baseline drift). In weak presses
+ * it fills the whole image after the percentile stretch, the SIFT keypoints
+ * all land on the residue -> different fingers match each other.
+ * This pipeline works in floating point throughout (no 4095 clipping), uses a
+ * DoG band-pass to keep only the ridge-spacing band (σ1≈1 removes pixel
+ * noise, σ2≈4 the low-frequency residue/pressure components), optionally
+ * removes the gain residue by regression on the baseline shape, then
+ * stretches + CLAHE to equalize local contrast. The parameters match the
+ * OpenCV/numpy reference of the offline calibration (tools/fp_tune):
+ * Gaussian kernel length round(8σ+1)|1, reflect-101 border, linearly
+ * interpolated percentiles, CLAHE with the OpenCV algorithm. */
 
 static const uint8_t *select_base(const struct goodix_dev *d,
                                   const struct gx_imgproc_params *p)
@@ -275,7 +299,7 @@ static const uint8_t *select_base(const struct goodix_dev *d,
     return d->img_base_valid ? d->img_base : NULL;
 }
 
-/* reflect-101 边界索引（OpenCV BORDER_DEFAULT），要求 |越界| < n */
+/* reflect-101 border index (OpenCV BORDER_DEFAULT), requires |overflow| < n */
 static inline int reflect101(int i, int n)
 {
     if (i < 0)
@@ -285,8 +309,9 @@ static inline int reflect101(int i, int n)
     return i;
 }
 
-/* 可分离高斯（浮点），核同 cv::getGaussianKernel(round(8σ+1)|1, σ)。
- * 返回 0 成功、-1 分配失败（out 保持不变）。 */
+/* separable Gaussian (floating point), kernel as
+ * cv::getGaussianKernel(round(8σ+1)|1, σ).
+ * Returns 0 on success, -1 on allocation failure (out unchanged). */
 static int gauss_f(const float *in, float *out, int w, int h, float sigma)
 {
     int ks = ((int)lroundf(sigma * 8.0f + 1.0f)) | 1;
@@ -330,8 +355,10 @@ static int gauss_f(const float *in, float *out, int w, int h, float sigma)
     return 0;
 }
 
-/* d = raw - base（浮点）；deghost 时减去 d 在 (base - mean(base)) 上的
- * 最小二乘投影：增益残影与基线逐像素形状同源（手指整体压低量 x 增益）。 */
+/* d = raw - base (floating point); with deghost, the least-squares
+ * projection of d on (base - mean(base)) is subtracted: the gain residue has
+ * the same per-pixel shape as the baseline (overall lowering by the finger x
+ * gain). */
 static void ridge_diff(const uint8_t *img16, const uint8_t *base,
                        uint32_t npix, int deghost, float *dst)
 {
@@ -357,7 +384,7 @@ static void ridge_diff(const uint8_t *img16, const uint8_t *base,
         dst[i] -= (float)(num / den * (imgproc_px16(base, i) - bmean));
 }
 
-/* DoG 带通：dst = G(σ1) - G(σ2)，原地可用（dst == src）。 */
+/* DoG band-pass: dst = G(σ1) - G(σ2), works in place (dst == src). */
 static int ridge_dog(const float *src, float *dst, int w, int h,
                      float s1, float s2)
 {
@@ -383,7 +410,7 @@ static int cmp_float(const void *a, const void *b)
     return (x > y) - (x < y);
 }
 
-/* numpy.percentile（linear）于已排序数组 */
+/* numpy.percentile (linear) on a sorted array */
 static float pct_sorted(const float *v, uint32_t n, float q)
 {
     float pos = (float)(n - 1) * q / 100.0f;
@@ -394,7 +421,7 @@ static float pct_sorted(const float *v, uint32_t n, float q)
     return v[i] + fr * (v[i + 1] - v[i]);
 }
 
-/* 百分位拉伸到 0..255（截断取整，同 numpy astype(uint8)） */
+/* percentile stretch to 0..255 (truncating, as numpy astype(uint8)) */
 static int ridge_stretch(const float *src, uint8_t *out8, uint32_t npix,
                          uint8_t pct_lo, uint8_t pct_hi)
 {
@@ -418,8 +445,10 @@ static int ridge_stretch(const float *src, uint8_t *out8, uint32_t npix,
     return 0;
 }
 
-/* CLAHE（OpenCV 算法：分块直方图裁剪+均匀再分配、LUT、双线性插值）。
- * 要求 w、h 可被 tiles 整除（80x64 / 4 成立），否则不处理。原地。 */
+/* CLAHE (OpenCV algorithm: per-tile histogram clipping + uniform
+ * redistribution, LUT, bilinear interpolation).
+ * Requires w and h to be divisible by tiles (true for 80x64 / 4), otherwise
+ * nothing is done. In place. */
 static void ridge_clahe(uint8_t *img, int w, int h, float clip, int tiles)
 {
     int tw, th, total, limit;
@@ -529,7 +558,8 @@ int gx_imgproc_signal(const struct goodix_dev *d,
     return 0;
 }
 
-/* RIDGE 管线主体。返回 0 成功；-1 无基线/分配失败（调用方回退 legacy）。 */
+/* Body of the RIDGE pipeline. Returns 0 on success; -1 with no baseline or on
+ * allocation failure (the caller falls back to legacy). */
 static int ridge_to8bit(const struct goodix_dev *d,
                         const struct gx_imgproc_params *p,
                         const uint8_t *img16, uint8_t *out8)
@@ -554,8 +584,9 @@ static int ridge_to8bit(const struct goodix_dev *d,
     return r;
 }
 
-/* ---- 逐级调试 dump（GOODIX_DUMP_IMGPROC=1）----
- * 序号用 static 计数器：仅调试路径使用，非线程安全可接受。 */
+/* ---- per-stage debug dump (GOODIX_DUMP_IMGPROC=1) ----
+ * The sequence number uses a static counter: only on the debug path, so not
+ * being thread safe is acceptable. */
 static uint32_t imgproc_seq;
 
 static void dump_pgm_u8(const char *stage, uint32_t seq,
@@ -583,7 +614,7 @@ static void dump_pgm16(const char *stage, uint32_t seq,
     if (!tmp)
         return;
     for (uint32_t i = 0; i < (uint32_t)w * h; i++)
-        tmp[i] = (uint8_t)(px[i] >> 4);     /* 12bit -> 高 8 位 */
+        tmp[i] = (uint8_t)(px[i] >> 4);     /* 12 bit -> top 8 bits */
     dump_pgm_u8(stage, seq, w, h, tmp);
     free(tmp);
 }
@@ -600,7 +631,7 @@ static void dump_pgm16le(const char *stage, uint32_t seq,
     free(tmp);
 }
 
-/* 16bit 原样 dump：PGM P5 maxval 4095，像素大端（PGM 规范） */
+/* raw 16-bit dump: PGM P5 maxval 4095, big-endian pixels (PGM spec) */
 static void dump_pgm16raw(const char *stage, uint32_t seq,
                           uint32_t w, uint32_t h, const uint8_t *img16le)
 {
@@ -631,7 +662,7 @@ void gx_imgproc_dump16(const struct goodix_dev *d, const char *stage,
     LOG("imgproc: dumped %s (seq %u)", stage, imgproc_seq);
 }
 
-/* ---- 公共入口 ---- */
+/* ---- public entry point ---- */
 int gx_imgproc_to8bit(const struct goodix_dev *d,
                       const struct gx_imgproc_params *p,
                       const uint8_t *img16, uint8_t *out8)
@@ -656,7 +687,8 @@ int gx_imgproc_to8bit(const struct goodix_dev *d,
 
     do_dump = getenv("GOODIX_DUMP_IMGPROC") != NULL;
 
-    /* 标定：16bit 原帧 + 两种基线原样落盘，离线可复现任意管线 */
+    /* calibration: the raw 16-bit frame + both baselines saved as they are, so
+     * any pipeline can be replayed offline */
     if (do_dump) {
         struct gx_imgproc_signal sig;
         dump_pgm16raw("raw16", imgproc_seq, w, h, img16);
@@ -692,12 +724,14 @@ int gx_imgproc_to8bit(const struct goodix_dev *d,
             if (do_dump)
                 dump_pgm16("flat8", imgproc_seq, w, h, buf);
         } else {
-            /* 平场分配失败：回退为无平场直方图（输出仍合法） */
+            /* flat-field allocation failed: fall back to the histogram without flat
+         * field (the output is still valid) */
             for (uint32_t i = 0; i < npix; i++)
                 hist[buf[i]]++;
         }
     } else {
-        /* 无平场：直接用 buf 建直方图（clamp 后值在 [0,4095]） */
+        /* no flat field: build the histogram straight from buf (values within
+         * [0,4095] after clamping) */
         for (uint32_t i = 0; i < npix; i++)
             hist[buf[i]]++;
     }

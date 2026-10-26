@@ -1,9 +1,9 @@
-/* gxd-template.c - impronta registrata: confronto e formato su disco.
+/* gxd-template.c - enrolled fingerprint: matching and on-disk format.
  *
- * Formato file: "GXFPD1\n" seguito da un GVariant in forma normale
+ * File format: "GXFPD1\n" followed by a GVariant in normal form
  *   (u version, s username, y finger, x enrolled,
- *    a(yuxxay) frames: origin, hits, added, last_used, feature serializzate)
- * Le feature usano gx_featset_serialize() del core.
+ *    a(yuxxay) frames: origin, hits, added, last_used, serialized features)
+ * The features use the core's gx_featset_serialize().
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -86,9 +86,9 @@ gxd_template_match (const GxdTemplate *tpl, const struct gx_featset *probe,
   for (guint i = 0; i < tpl->frames->len; i++)
     {
       const GxdFrame *fr = g_ptr_array_index (tpl->frames, i);
-      /* Stesso ordine di libfprint (sigfm_match_score(frame registrato,
-       * acquisizione)): il test del rapporto 2-NN non e' simmetrico e con
-       * l'ordine inverso i punteggi cambiano. */
+      /* Same order as libfprint (sigfm_match_score(enrolled frame, capture)):
+       * the 2-NN ratio test is not symmetric and with the reverse order the
+       * scores change. */
       int score = gx_match_score (&fr->fs, probe);
 
       if (score > out->best_score)

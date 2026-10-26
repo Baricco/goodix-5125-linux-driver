@@ -1,4 +1,4 @@
-/* gxd-common.c - errori, nomi delle dita, directory dei dati.
+/* gxd-common.c - errors, finger names, data directory.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -69,7 +69,7 @@ gxd_state_dir (void)
 {
   if (state_dir == NULL)
     {
-      /* systemd lo esporta per StateDirectory=fprint di fprintd.service */
+      /* systemd exports it for StateDirectory=fprint of fprintd.service */
       const char *env = g_getenv ("STATE_DIRECTORY");
 
       state_dir = g_strdup (env && *env && !strchr (env, ':') ? env : "/var/lib/fprint");

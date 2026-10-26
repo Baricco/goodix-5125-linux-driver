@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""GUI di gestione impronte per il Goodix 27c6:5125 (PySide6).
+"""Fingerprint management GUI for the Goodix 27c6:5125 (PySide6).
 
-Gestisce una COLLEZIONE di impronte con nome: ne registri quante vuoi, le mappi (mosaico a
-puzzle, vedi fragment_mapper), e la verifica confronta un tocco con TUTTE mostrando quale combacia.
-Puoi rinominare/eliminare per gestire la collezione.
+Manages a COLLECTION of named fingerprints: enroll as many as you like, map them (puzzle mosaic,
+see fragment_mapper), and verification compares a touch against ALL of them, showing which one
+matches. You can rename/delete to manage the collection.
 
-Le impronte stanno in state/fingers/<nome>.npz. Gira da utente (udev uaccess). Il matching e' SIGFM
-(0 falsi positivi nei test); la verifica e' multi-frame (un tocco genuino passa se almeno un frame
-aggancia).
+Fingerprints live in state/fingers/<name>.npz. Runs as the user (udev uaccess). Matching is SIGFM
+(0 false positives in the tests); verification is multi-frame (a genuine touch passes if at least
+one frame locks).
 
-Uso:
+Usage:
   tools/.venv/bin/python lab/enroll_gui.py
-  tools/.venv/bin/python lab/enroll_gui.py --replay captures      # demo senza hardware
+  tools/.venv/bin/python lab/enroll_gui.py --replay captures      # demo without hardware
 """
 
 import os
@@ -22,7 +22,7 @@ import glob
 import signal
 import contextlib
 
-# silenzia il rumore di Qt su Wayland (innocuo ma invadente)
+# silence Qt's noise on Wayland (harmless but intrusive)
 os.environ.setdefault("QT_LOGGING_RULES", "qt.qpa.wayland.textinput=false")
 
 import numpy as np
@@ -58,9 +58,9 @@ QLabel#map { background:#0c0e13; border:1px solid #262b34; border-radius:8px; }
 """
 
 
-# --------------------------------------------------------------------- store impronte
+# --------------------------------------------------------------------- fingerprint store
 def _safe(name):
-    return re.sub(r"[^\w\-]+", "_", name.strip())[:40] or "impronta"
+    return re.sub(r"[^\w\-]+", "_", name.strip())[:40] or "fingerprint"
 
 
 class FingerStore:
@@ -89,7 +89,7 @@ class FingerStore:
             os.remove(p)
 
 
-# --------------------------------------------------------------------- sorgenti frame
+# --------------------------------------------------------------------- frame sources
 class HardwareSource:
     def __init__(self):
         import sensor
@@ -142,7 +142,7 @@ class Worker(QtCore.QObject):
                 clear = self.src.capture_clear()
             self.clear_ready.emit(clear)
         except Exception as e:
-            self.failed.emit(f"apertura sensore: {e}")
+            self.failed.emit(f"opening the sensor: {e}")
 
     @QtCore.Slot(str)
     def do_capture(self, kind):
@@ -151,9 +151,9 @@ class Worker(QtCore.QObject):
         try:
             with contextlib.redirect_stdout(DEVNULL):
                 if kind == "map":
-                    f = self.src.grab()          # mappatura: cattura continua, niente danza FDT
+                    f = self.src.grab()          # mapping: continuous capture, no FDT dance
                 else:
-                    self.src.arm()               # verifica: tocco singolo deliberato
+                    self.src.arm()               # verification: a single deliberate touch
                     f = self.src.capture_touch()
                     self.src.lift()
             self.frame_ready.emit(f, kind)
@@ -161,19 +161,19 @@ class Worker(QtCore.QObject):
             self.failed.emit(f"cattura: {e}")
 
 
-# --------------------------------------------------------------------- finestra
+# --------------------------------------------------------------------- window
 class MainWindow(QtWidgets.QMainWindow):
     request_open = QtCore.Signal()
     request_capture = QtCore.Signal(str)
 
     def __init__(self, src):
         super().__init__()
-        self.setWindowTitle("Goodix 5125 — Impronte")
+        self.setWindowTitle("Goodix 5125 — Fingerprints")
         self.setStyleSheet(STYLE)
         self.resize(960, 600)
         self.store = FingerStore()
-        self.fingers = {}          # nome -> FragmentMapper (caricate, per la verifica)
-        self.session = None        # impronta attiva (in mappatura/vista)
+        self.fingers = {}          # name -> FragmentMapper (loaded, for verification)
+        self.session = None        # active fingerprint (mapping/view)
         self.active_name = None
         self.clear = None
         self.ready = False
@@ -197,19 +197,19 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # ---------------- UI ----------------
     def _build_ui(self):
-        # colonna sinistra: collezione + sensore
+        # left column: collection + sensor
         self.list = QtWidgets.QListWidget()
         self.list.itemSelectionChanged.connect(self.on_select)
-        self.btn_new = QtWidgets.QPushButton("＋ Nuova impronta", objectName="primary")
-        self.btn_del = QtWidgets.QPushButton("🗑 Elimina")
+        self.btn_new = QtWidgets.QPushButton("＋ New fingerprint", objectName="primary")
+        self.btn_del = QtWidgets.QPushButton("🗑 Delete")
         self.btn_new.clicked.connect(self.on_new)
         self.btn_del.clicked.connect(self.on_delete)
-        self.btn_init = QtWidgets.QPushButton("Inizializza sensore")
+        self.btn_init = QtWidgets.QPushButton("Initialize sensor")
         self.btn_init.clicked.connect(self.on_init)
-        self.sensor_lbl = QtWidgets.QLabel("Sensore non inizializzato", objectName="status")
+        self.sensor_lbl = QtWidgets.QLabel("Sensor not initialized", objectName="status")
 
         left = QtWidgets.QVBoxLayout()
-        left.addWidget(QtWidgets.QLabel("Impronte", objectName="title"))
+        left.addWidget(QtWidgets.QLabel("Fingerprints", objectName="title"))
         left.addWidget(self.list, 1)
         row = QtWidgets.QHBoxLayout(); row.addWidget(self.btn_new); row.addWidget(self.btn_del)
         left.addLayout(row)
@@ -218,21 +218,21 @@ class MainWindow(QtWidgets.QMainWindow):
         left.addWidget(self.sensor_lbl)
         left_w = QtWidgets.QWidget(); left_w.setLayout(left); left_w.setFixedWidth(240)
 
-        # centro: mappa + azioni
-        self.map_title = QtWidgets.QLabel("Nessuna impronta selezionata", objectName="title")
-        # inquadratura corrente (frame live in tempo reale)
+        # centre: map + actions
+        self.map_title = QtWidgets.QLabel("No fingerprint selected", objectName="title")
+        # current view (live frame in real time)
         self.live = QtWidgets.QLabel(alignment=QtCore.Qt.AlignCenter)
         self.live.setFixedSize(80 * 2, 64 * 2)
         self.live.setStyleSheet("background:#0c0e13;border:1px solid #2a2f3a;border-radius:6px;")
         self.map_label = QtWidgets.QLabel(objectName="map", alignment=QtCore.Qt.AlignCenter)
         self.map_label.setMinimumSize(MAP_W, MAP_H)
-        self.btn_map = QtWidgets.QPushButton("Mappa dito", objectName="danger", checkable=True)
-        self.btn_save = QtWidgets.QPushButton("Salva")
-        self.btn_verify = QtWidgets.QPushButton("Verifica (tutte)", objectName="primary")
+        self.btn_map = QtWidgets.QPushButton("Map finger", objectName="danger", checkable=True)
+        self.btn_save = QtWidgets.QPushButton("Save")
+        self.btn_verify = QtWidgets.QPushButton("Verify (all)", objectName="primary")
         self.btn_map.clicked.connect(self.on_toggle_map)
         self.btn_save.clicked.connect(self.on_save)
         self.btn_verify.clicked.connect(self.on_verify_start)
-        self.status = QtWidgets.QLabel("Inizializza il sensore, poi crea o seleziona un'impronta.",
+        self.status = QtWidgets.QLabel("Initialize the sensor, then create or select a fingerprint.",
                                        objectName="status", wordWrap=True)
 
         acts = QtWidgets.QHBoxLayout()
@@ -275,7 +275,7 @@ class MainWindow(QtWidgets.QMainWindow):
                                                          QtCore.Qt.SmoothTransformation)
 
     def _show_live(self, frame):
-        """Mostra l'inquadratura corrente (ogni frame, in tempo reale)."""
+        """Shows the current view (every frame, in real time)."""
         img = preprocess(frame, self.clear) if self.clear is not None else frame
         img = np.ascontiguousarray(img.astype(np.uint8))
         qi = QtGui.QImage(img.data, img.shape[1], img.shape[0], img.shape[1],
@@ -288,8 +288,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if not self.session or not self.session.frags:
             self.map_label.clear()
             name = self.active_name or "—"
-            self.map_title.setText(f"{name}: vuota — premi «Mappa dito»" if self.session
-                                   else "Nessuna impronta selezionata")
+            self.map_title.setText(f"{name}: empty — press «Map finger»" if self.session
+                                   else "No fingerprint selected")
             return
         vis, frac = self.session.render_main()
         if vis is not None:
@@ -297,12 +297,12 @@ class MainWindow(QtWidgets.QMainWindow):
         fr = self.session.view()
         tiles = len(fr.kfs); is_main = fr is self.session.main()
         total = sum(len(f.kfs) for f in self.session.frags)
-        piece = "pezzo principale" if is_main else "⚠ pezzo staccato"
-        enough = " · copertura buona ✓" if (is_main and tiles >= 60 and frac < 0.10) else ""
-        self.map_title.setText(f"{self.active_name or 'senza nome'} — {piece}: {tiles} tess · "
-                               f"{len(self.session.frags)} pezzi · {total} tot · buchi {frac * 100:.0f}%{enough}")
+        piece = "main piece" if is_main else "⚠ detached piece"
+        enough = " · good coverage ✓" if (is_main and tiles >= 60 and frac < 0.10) else ""
+        self.map_title.setText(f"{self.active_name or 'unnamed'} — {piece}: {tiles} tiles · "
+                               f"{len(self.session.frags)} pieces · {total} total · holes {frac * 100:.0f}%{enough}")
 
-    # ---------------- collezione ----------------
+    # ---------------- collection ----------------
     def _reload_fingers(self):
         self.fingers = {}
         for nm in self.store.names():
@@ -314,7 +314,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.list.clear()
         for nm in self.store.names():
             tiles = sum(len(f.kfs) for f in self.fingers[nm].frags) if nm in self.fingers else 0
-            self.list.addItem(f"{nm}   ·   {tiles} tessere")
+            self.list.addItem(f"{nm}   ·   {tiles} tiles")
         self.list.blockSignals(False)
         self._sync_buttons()
 
@@ -328,61 +328,61 @@ class MainWindow(QtWidgets.QMainWindow):
         self.active_name = nm
         self.session = self.fingers[nm]
         if self.ready:
-            self.session.clear = self.clear      # per continuare a mappare col clear fresco
+            self.session.clear = self.clear      # to keep mapping with the fresh clear frame
         self._show_map()
-        self.status.setText(f"Impronta «{nm}» selezionata. Puoi continuare a mapparla o verificare.")
+        self.status.setText(f"Fingerprint «{nm}» selected. You can keep mapping it or verify.")
         self._sync_buttons()
 
     def on_new(self):
         if not self.ready:
-            self.status.setText("Prima inizializza il sensore."); return
-        name, ok = QtWidgets.QInputDialog.getText(self, "Nuova impronta", "Nome (es. indice destro):")
+            self.status.setText("Initialize the sensor first."); return
+        name, ok = QtWidgets.QInputDialog.getText(self, "New fingerprint", "Name (e.g. right index):")
         if not ok or not name.strip():
             return
         if self.store.exists(name):
-            self.status.setText(f"Esiste già un'impronta «{name}». Scegli un altro nome."); return
+            self.status.setText(f"A fingerprint «{name}» already exists. Choose another name."); return
         self.active_name = name.strip()
         self.session = FM.FragmentMapper(self.clear)
         self.list.clearSelection()
         self._show_map()
-        self.status.setText(f"«{self.active_name}»: premi «Mappa dito» e muovi il dito. Poi «Salva».")
+        self.status.setText(f"«{self.active_name}»: press «Map finger» and move the finger. Then «Save».")
         self._sync_buttons()
 
     def on_delete(self):
         nm = self._name_of(self.list.currentItem())
         if not nm:
             return
-        if QtWidgets.QMessageBox.question(self, "Elimina", f"Eliminare l'impronta «{nm}»?") \
+        if QtWidgets.QMessageBox.question(self, "Delete", f"Delete the fingerprint «{nm}»?") \
                 != QtWidgets.QMessageBox.Yes:
             return
         self.store.delete(nm)
         if self.active_name == nm:
             self.session = None; self.active_name = None; self._show_map()
         self._reload_fingers()
-        self.status.setText(f"Impronta «{nm}» eliminata.")
+        self.status.setText(f"Fingerprint «{nm}» deleted.")
 
     def on_save(self):
         if not self.session or not self._tiles():
-            self.status.setText("Niente da salvare: mappa prima il dito."); return
+            self.status.setText("Nothing to save: map the finger first."); return
         if not self.active_name:
-            name, ok = QtWidgets.QInputDialog.getText(self, "Salva impronta", "Nome:")
+            name, ok = QtWidgets.QInputDialog.getText(self, "Save fingerprint", "Name:")
             if not ok or not name.strip():
                 return
             self.active_name = name.strip()
         removed = self.session.prune(2)
         self.store.save(self.active_name, self.session)
         self._reload_fingers()
-        # riseleziona
+        # select it again
         for i in range(self.list.count()):
             if self._name_of(self.list.item(i)) == self.active_name:
                 self.list.setCurrentRow(i); break
-        self.status.setText(f"Salvata «{self.active_name}» ({self._tiles()} tessere, "
-                            f"potati {removed} pezzetti).")
+        self.status.setText(f"Saved «{self.active_name}» ({self._tiles()} tiles, "
+                            f"pruned {removed} scraps).")
 
-    # ---------------- sensore / mappatura ----------------
+    # ---------------- sensor / mapping ----------------
     def on_init(self):
         self.btn_init.setEnabled(False)
-        self.sensor_lbl.setText("Inizializzo (TLS-PSK)…")
+        self.sensor_lbl.setText("Initializing (TLS-PSK)…")
         self.request_open.emit()
 
     @QtCore.Slot(object)
@@ -391,8 +391,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.ready = True
         if self.session is not None:
             self.session.clear = clear
-        self.sensor_lbl.setText("Sensore pronto ✓")
-        self.status.setText("Pronto. Crea una «Nuova impronta» o seleziona e verifica.")
+        self.sensor_lbl.setText("Sensor ready ✓")
+        self.status.setText("Ready. Create a «New fingerprint» or select one and verify.")
         self._sync_buttons()
 
     def _capture(self, kind):
@@ -407,40 +407,40 @@ class MainWindow(QtWidgets.QMainWindow):
             self.btn_map.setText("Ferma"); self.btn_verify.setEnabled(False)
             self._capture("map")
         else:
-            self.btn_map.setText("Mappa dito"); self._show_map(); self._sync_buttons()
+            self.btn_map.setText("Map finger"); self._show_map(); self._sync_buttons()
 
     def on_verify_start(self):
         if not self.fingers:
-            self.status.setText("Nessuna impronta salvata da verificare."); return
+            self.status.setText("No saved fingerprint to verify."); return
         self._vleft = VERIFY_FRAMES
         self._vbest = {nm: 0 for nm in self.fingers}
         self.btn_verify.setEnabled(False); self.btn_map.setEnabled(False)
-        self.status.setText("Verifica: appoggia il dito e TIENILO FERMO un secondo…")
+        self.status.setText("Verify: place your finger and HOLD IT STILL for a second…")
         self._capture("verify")
 
     @QtCore.Slot(object, str)
     def on_frame(self, frame, kind):
-        self._show_live(frame)          # inquadratura corrente in tempo reale, ogni frame
+        self._show_live(frame)          # current view in real time, every frame
         if kind == "map":
             r = self.session.add_frame(frame)
             now = time.monotonic()
-            # ridisegna la mappa (throttled ~8/s) a ogni frame AGGANCIATO, cosi' il marker "sei qui"
-            # segue l'inquadratura anche su zone gia' mappate; sui frame vuoti non muove nulla.
-            if not r["status"].startswith("vuoto") and now - self._last_render > 0.12:
+            # redraw the map (throttled ~8/s) on every LOCKED frame, so the "you are here" marker
+            # follows the view even over areas already mapped; empty frames move nothing.
+            if not r["status"].startswith("empty") and now - self._last_render > 0.12:
                 self._show_map(); self._last_render = now
-            tag = {"mappa estesa": "✓", "inizio mappa": "✓", "nuovo pezzo": "+",
-                   "già coperto qui": "•", "debole": "·"}.get(
-                r["status"], "↔" if r["status"].startswith("ponte") else "·")
-            self.status.setText(f"{tag} {r['status']} — {r['frags']} pezzi")
+            tag = {"map extended": "✓", "map started": "✓", "new piece": "+",
+                   "already covered here": "•", "weak": "·"}.get(
+                r["status"], "↔" if r["status"].startswith("bridge") else "·")
+            self.status.setText(f"{tag} {r['status']} — {r['frags']} pieces")
             if self.mapping:
                 self._capture("map")
-        else:  # verify contro tutte
+        else:  # verify against all of them
             import sigfm
             feats = sigfm.features(preprocess(frame, self.clear))
             for nm, fm in self.fingers.items():
                 self._vbest[nm] = max(self._vbest[nm], fm.best_score(feats))
             self._vleft -= 1
-            self.status.setText(f"Verifica… {VERIFY_FRAMES - self._vleft}/{VERIFY_FRAMES}")
+            self.status.setText(f"Verifying… {VERIFY_FRAMES - self._vleft}/{VERIFY_FRAMES}")
             if self._vleft > 0:
                 self._capture("verify")
             else:
@@ -452,9 +452,9 @@ class MainWindow(QtWidgets.QMainWindow):
         ok = score >= FM.VERIFY_MIN
         detail = "   ".join(f"{nm}:{sc}" for nm, sc in ranking[:5])
         if ok:
-            self.status.setText(f"✓ RICONOSCIUTA: «{winner}»  (score {score})   —   {detail}")
+            self.status.setText(f"✓ RECOGNIZED: «{winner}»  (score {score})   —   {detail}")
         else:
-            self.status.setText(f"✗ nessuna corrispondenza (miglior {winner}:{score} < {FM.VERIFY_MIN})   —   {detail}")
+            self.status.setText(f"✗ no match (best {winner}:{score} < {FM.VERIFY_MIN})   —   {detail}")
         self._sync_buttons()
 
     @QtCore.Slot(str)
@@ -462,7 +462,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.sensor_lbl.setText(f"⚠ {msg}")
         self.btn_init.setEnabled(True)
         if self.mapping:
-            self.mapping = False; self.btn_map.setChecked(False); self.btn_map.setText("Mappa dito")
+            self.mapping = False; self.btn_map.setChecked(False); self.btn_map.setText("Map finger")
         self._sync_buttons()
 
     def closeEvent(self, ev):
@@ -470,10 +470,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.worker.stop = True
         self.thread.quit()
         if not self.thread.wait(3000):
-            # worker bloccato in una chiamata libusb (sensore impiantato): uscita forzata
-            # pulita invece di lasciare che Qt distrugga il QThread -> SIGABRT.
+            # worker stuck in a libusb call (sensor hung): forced but clean exit
+            # instead of letting Qt destroy the QThread -> SIGABRT.
             os._exit(0)
-        # thread terminato: nessun accesso concorrente -> teardown pulito del sensore
+        # thread finished: no concurrent access -> clean teardown of the sensor
         try:
             if self.ready:
                 self.worker.src.close()
@@ -485,7 +485,7 @@ class MainWindow(QtWidgets.QMainWindow):
 def main():
     import argparse
     ap = argparse.ArgumentParser()
-    ap.add_argument("--replay", metavar="DIR", help="rilegge i *_plain.bin da DIR invece dell'hardware")
+    ap.add_argument("--replay", metavar="DIR", help="reads the *_plain.bin files from DIR instead of the hardware")
     args = ap.parse_args()
     src = ReplaySource(args.replay) if args.replay else HardwareSource()
     app = QtWidgets.QApplication(sys.argv)

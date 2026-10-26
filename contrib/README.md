@@ -1,37 +1,37 @@
-# contrib — contributi ai progetti da cui viene il codice
+# contrib — fixes sent back to the projects this code comes from
 
-Correzioni nate qui che servono anche agli altri. **Il progetto non dipende
-da nessuna di queste**: `goodixfpd` non usa né libfprint né il driver di
-Rockytkg. Sono restituzioni, non requisiti.
+Fixes born here that are useful to others too. **The project depends on none
+of them**: `goodixfpd` uses neither libfprint nor Rockytkg's driver. They are
+contributions back, not requirements.
 
-Le patch sono già divise in commit autonomi, con i messaggi definitivi e
-come autore l'indirizzo anonimo GitHub
-(`38298051+Baricco@users.noreply.github.com`). Stato: **non ancora inviate**.
+The patches are split into self-contained commits with their final messages.
+Status: **submitted** on 25/10/2026.
 
-## 1. Rockytkg/goodix-linux-27c6-5125 — pull request su GitHub
+## 1. Rockytkg/goodix-linux-27c6-5125 — GitHub pull request
 
-[`rockytkg/`](rockytkg): quattro commit sopra `227eba2` (master), anche come
-ramo `fix-false-accepts` nel clone `ext/goodix-linux-27c6-5125`. Ognuno
-compila da solo con il loro `make`, il terzo e il quarto anche senza
+Submitted as [Rockytkg/goodix-linux-27c6-5125#4](https://github.com/Rockytkg/goodix-linux-27c6-5125/pull/4).
+
+[`rockytkg/`](rockytkg): four commits on top of `227eba2` (master). Each one
+builds by itself with their `make`, the third and the fourth also without
 `include/goodix_fw.h`.
 
 | | |
 |---|---|
-| `0001` | Niente più dita sbagliate accettate: pipeline immagine "ridge", baseline fresca prima di ogni tocco, controllo del contrasto (`GOODIX_MIN_RIDGE`); attesa dell'immagine non annullabile (evitava record TLS a metà), tocchi "rovesciati" 0x80/0x82 riconosciuti. |
-| `0002` | Registrazione da 15 a 30 tocchi (prima 3-8, copertura insufficiente); buffer dei frame sullo heap (limite 64 KiB delle istanze GObject). |
-| `0003` | Si compila anche senza il firmware Goodix: confronta solo la versione, non cancella mai l'APP senza un'immagine da scrivere; gli installatori copiano `goodix_fw.h` solo se c'è. |
-| `0004` | Gli installatori applicano a `sigfm.cpp` del fork le due correzioni di SIGFM (vedi sotto): seconda linea di difesa. |
+| `0001` | No more wrong fingers accepted: "ridge" image pipeline, fresh baseline before every touch, contrast check (`GOODIX_MIN_RIDGE`); the wait for an image already requested can no longer be cancelled (it left half a TLS record in the channel), "reverse" touches 0x80/0x82 recognized. |
+| `0002` | Enrollment with 15 to 30 touches (3-8 before, not enough coverage); frame buffer on the heap (64 KiB limit of GObject instances). |
+| `0003` | Builds without the Goodix firmware too: it only compares the version and never erases the APP area without an image to write; the installers copy `goodix_fw.h` only if it exists. |
+| `0004` | The installers apply the two SIGFM fixes (see below) to the fork's `sigfm.cpp`: a second line of defence. |
 
-Misure (dataset in `captures/`, banco `tools/fp_tune`):
+Measurements (data sets in `captures/`, bench in `tools/fp_tune`):
 
-| | impostori accettati | genuini accettati |
+| | impostors accepted | genuine accepted |
 |---|---|---|
-| tocchi deboli, pipeline vecchia, SIGFM originale | 15/20 | 7/20 |
-| tocchi deboli, pipeline vecchia, SIGFM corretto | 0/20 | 0/20 |
-| pipeline ridge (commit 1), SIGFM originale | 0/25 | 22/25 |
-| pipeline ridge (commit 1), SIGFM corretto (commit 4) | 0/25 | 22/25, punteggi ~2,5× più alti |
+| weak touches, old pipeline, original SIGFM | 15/20 | 7/20 |
+| weak touches, old pipeline, fixed SIGFM | 0/20 | 0/20 |
+| ridge pipeline (commit 1), original SIGFM | 0/25 | 22/25 |
+| ridge pipeline (commit 1), fixed SIGFM (commit 4) | 0/25 | 22/25, scores ~2.5× higher |
 
-Titolo e testo proposti:
+Title and text as submitted:
 
 > **Fix false accepts on the 27c6:5125, 15-30 press enrollment, optional firmware**
 >
@@ -63,23 +63,24 @@ Titolo e testo proposti:
 >    unpatched SIGFM accepts 15/20 impostors, the patched one 0/20 (those
 >    frames carry almost no ridge signal, which is why commit 1 now asks
 >    for a retry). Both fixes are also proposed upstream on libfprint !530.
->
-> 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 
-## 2. SIGFM — commento sulla merge request libfprint !530
+## 2. SIGFM — comment on libfprint merge request !530
 
-[`sigfm/`](sigfm): due commit sopra la testa attuale della MR
-(`bc986621 elan: switch to sigfm`), anche come ramo `sigfm-fixes` nel clone
-`ext/goodix-linux-27c6-5125/libfprint`. I test di SIGFM (`sigfm-tests`,
-doctest) passano.
+Submitted as a comment on
+<https://gitlab.freedesktop.org/libfprint/libfprint/-/merge_requests/530>, with
+the two patches attached (the MR lives on another author's fork, so commits
+cannot be pushed to its branch).
+
+[`sigfm/`](sigfm): two commits on top of the current head of the MR
+(`bc986621 elan: switch to sigfm`). The SIGFM tests (`sigfm-tests`, doctest)
+pass.
 
 | | |
 |---|---|
-| `0001` | `operator<` di `match` confrontava solo `p1.y`: `std::set` teneva una corrispondenza per riga e scartava le altre. Correzione pura. |
-| `0002` | Scarta le corrispondenze con spostamento ≤ 2 px (il pattern fisso dei sensori piccoli faceva accettare dita sbagliate). |
+| `0001` | `match::operator<` compared only `p1.y`: `std::set` kept one correspondence per row and dropped the others. A pure fix. |
+| `0002` | Drops correspondences displaced by ≤ 2 px (the fixed pattern of small sensors made wrong fingers match). |
 
-La MR è sul fork di un altro autore, quindi non si può spingere sul suo
-ramo: si lascia un commento con le due patch allegate. Testo proposto:
+Text as submitted:
 
 > Two fixes for `sigfm.cpp`, found while using SIGFM with a Goodix 27c6:5125
 > (80x64, match-on-host) on top of this MR. Patches attached, based on
@@ -97,22 +98,3 @@ ramo: si lascia un commento con le due patch allegate. Testo proposto:
 >    displaced by <= 2 px brought impostors to 0 on all our data (live: 0/25
 >    impostors, 22/25 genuine accepted). Side effect worth knowing: an image
 >    compared with a pixel-identical copy now scores 0.
-
-## Come inviarle (a mano)
-
-**GitHub (Rockytkg).** Fork dalla pagina del progetto (pulsante *Fork*), poi
-dal clone:
-
-```sh
-cd ext/goodix-linux-27c6-5125
-git remote add fork git@github.com:Baricco/goodix-linux-27c6-5125.git
-git push fork fix-false-accepts
-```
-
-Infine su GitHub *Compare & pull request*, verso `Rockytkg:master`, con il
-titolo e il testo qui sopra.
-
-**GitLab (SIGFM).** Account su <https://gitlab.freedesktop.org> (i nuovi
-account non possono fare fork, ma possono commentare), poi sulla pagina
-<https://gitlab.freedesktop.org/libfprint/libfprint/-/merge_requests/530>:
-testo nel riquadro dei commenti, i due file di `sigfm/` allegati, *Comment*.

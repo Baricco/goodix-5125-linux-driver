@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Preprocessing immagini Goodix 27c6:5125 (80x64, 12 bit) verso un'immagine pronta al matching.
+"""Preprocessing of Goodix 27c6:5125 images (80x64, 12 bit) into an image ready for matching.
 
-Catena: decodifica -> sottrazione baseline (frame clear) -> normalizzazione per colonna
-(rimuove il fixed-pattern del sensore) -> CLAHE -> normalizzazione del contrasto.
+Chain: decoding -> baseline subtraction (clear frame) -> per-column normalization
+(removes the sensor's fixed pattern) -> CLAHE -> contrast normalization.
 """
 
 import numpy as np
@@ -13,7 +13,7 @@ SAMPLE_MAX = 4095
 
 
 def decode(packed):
-    """7680 byte packed -> array uint16 (HEIGHT, WIDTH). Ordine colonna-major (schema grold)."""
+    """7680 packed bytes -> uint16 array (HEIGHT, WIDTH). Column-major order (grold's layout)."""
     n = WIDTH * HEIGHT
     out = np.zeros(n, dtype=np.uint16)
     for group in range(0, (n // 4) * 6, 6):
@@ -34,18 +34,18 @@ def frame_from_plaintext(plain):
 
 
 def preprocess(frame, baseline=None):
-    """frame, baseline: array (H,W) uint16. Restituisce uint8 (H,W) pronto al matching."""
+    """frame, baseline: (H,W) uint16 arrays. Returns a (H,W) uint8 image ready for matching."""
     img = frame.astype(np.float32)
     if baseline is not None:
-        img = baseline.astype(np.float32) - img      # creste = segnale sopra la baseline
-    # normalizzazione per colonna: toglie il fixed-pattern verticale del sensore
+        img = baseline.astype(np.float32) - img      # ridges = signal above the baseline
+    # per-column normalization: removes the sensor's vertical fixed pattern
     img -= img.mean(axis=0, keepdims=True)
-    # a 8 bit su range robusto (percentili)
+    # to 8 bit over a robust range (percentiles)
     lo, hi = np.percentile(img, 2), np.percentile(img, 98)
     if hi <= lo:
         hi = lo + 1
     img = np.clip((img - lo) * 255.0 / (hi - lo), 0, 255).astype(np.uint8)
-    # equalizzazione locale del contrasto per far risaltare le creste
+    # local contrast equalization to bring out the ridges
     img = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(4, 4)).apply(img)
     return img
 

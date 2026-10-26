@@ -1,11 +1,12 @@
-// goodix-driver — keyring-tpm (opzionale).
-// Consente a @USER@ di decifrare credenziali di sistema (systemd-creds) senza
-// autenticazione interattiva. Serve a sbloccare il keyring via TPM al login,
-// quando la sessione non e' ancora "attiva" per polkit e non c'e' agente
-// (altrimenti: io.systemd.InteractiveAuthenticationRequired).
+// goodix-driver — keyring-tpm (optional).
+// Lets @USER@ decrypt system credentials (systemd-creds) without interactive
+// authentication. Needed to unlock the keyring via TPM at login, when the
+// session is not yet "active" for polkit and there is no agent
+// (otherwise: io.systemd.InteractiveAuthenticationRequired).
 //
-// Nota sicurezza: su una macchina single-user dove l'utente ha gia' sudo questo
-// non e' un'escalation reale. Su multi-utente valutare di restringere o evitare.
+// Security note: on a single-user machine where the user already has sudo this
+// is not a real escalation. On multi-user systems consider restricting or
+// avoiding it.
 polkit.addRule(function(action, subject) {
     if (action.id == "io.systemd.credentials.decrypt" &&
         subject.user == "@USER@") {

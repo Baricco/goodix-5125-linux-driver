@@ -1,11 +1,11 @@
-# Pacchetto del servizio goodixfpd (lettore Goodix 27c6:5125/5135).
+# Package of the goodixfpd service (Goodix 27c6:5125/5135 reader).
 #
-# Nessuna libreria modificata: libfprint e fprintd restano quelli ufficiali
-# della distribuzione. goodixfpd prende il posto del demone di fprintd con un
-# drop-in di fprintd.service e parla la stessa interfaccia D-Bus; se il lettore
-# non c'e' avvia il vero fprintd.
+# No library is modified: libfprint and fprintd stay the distribution's
+# official ones. goodixfpd takes the place of fprintd's daemon through a
+# drop-in for fprintd.service and speaks the same D-Bus interface; if the
+# reader is not present it starts the real fprintd.
 #
-# Si costruisce dai sorgenti di questo repository:
+# Built from the sources of this repository:
 #   cd packaging/goodixfpd && makepkg -si
 
 pkgname=goodixfpd
@@ -15,8 +15,8 @@ pkgdesc="Fingerprint service for the Goodix 27c6:5125/5135 reader, compatible wi
 arch=(x86_64)
 license=(GPL-2.0-or-later)
 depends=(
-  fprintd       # pam_fprintd, fprintd-*, interfaccia D-Bus e regole polkit
-  libfprint     # quella ufficiale: serve a fprintd sulle altre macchine
+  fprintd       # pam_fprintd, fprintd-*, D-Bus interface and polkit rules
+  libfprint     # the official one: fprintd needs it on other machines
   glib2
   libusb
   openssl

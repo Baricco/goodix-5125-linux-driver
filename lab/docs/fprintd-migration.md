@@ -1,52 +1,52 @@
-# Strada C — migrazione allo stack standard: `fprintd` + driver `goodixgf`
+# Path C — migration to the standard stack: `fprintd` + the `goodixgf` driver
 
-Runbook per far entrare il sensore nello stack Linux standard (`fprintd` + `pam_fprintd`), così
-impronta su **sudo + login greetd/noctalia + lockscreen**, con la UX "tocca **oppure** scrivi la
-password". Rimpiazza il nostro demone `goodixfpd` (che resta come laboratorio/RE).
+Runbook to bring the sensor into the standard Linux stack (`fprintd` + `pam_fprintd`), giving
+fingerprint login on **sudo + greetd/noctalia login + lock screen**, with the UX "touch **or**
+type the password". It replaces our `goodixfpd` daemon (which stays as a lab/RE tool).
 
-Driver adottato: **`goodixgf`** di [Rockytkg/goodix-linux-27c6-5125](https://github.com/Rockytkg/goodix-linux-27c6-5125)
-sul fork [goodix-fp-linux-dev/libfprint](https://github.com/goodix-fp-linux-dev/libfprint)
-(branch `libfprint-sigfm`, matching **SIGFM** come il nostro). L'installer supporta CachyOS/Arch.
+Driver adopted: **`goodixgf`** from [Rockytkg/goodix-linux-27c6-5125](https://github.com/Rockytkg/goodix-linux-27c6-5125)
+on the fork [goodix-fp-linux-dev/libfprint](https://github.com/goodix-fp-linux-dev/libfprint)
+(branch `libfprint-sigfm`, **SIGFM** matching like ours). The installer supports CachyOS/Arch.
 
-## Sicurezza — cosa si scrive sul sensore
+## Safety — what gets written to the sensor
 
-- **Firmware: NON flashato.** Verificato nel codice (`src/goodix_fwupdate.c`): bundla
-  `GF_FW_VERSION="GF_ST411SEC_APP_12508"` = il nostro, e `strncmp(ver, GF_FW_VERSION)==0 -> return 1`
-  (salta). Il nostro chip è 12508 → nessun flash. C'è anche un pre-check CRC anti-brick.
-- **Unica scrittura: la PSK.** Alla prima apertura del device da `fprintd` (il primo enroll), il
-  driver ri-provisiona la sua PSK (comando E0, solo settore store, reversibile). **Sovrascrive la
-  nostra** `state/linux_psk.bin`. È "la scrittura che diamo sotto OK esplicito".
-- **Backup PSK nostra:** `state/linux_psk.bin` e copia in `state/old_maps/linux_psk.bin`. Non toccarli:
-  servono solo se si vuole tornare al demone Python.
-- Regola di sempre: tieni una **root-shell aperta** (`sudo -i` in un altro terminale) mentre tocchi
+- **Firmware: NOT flashed.** Checked in the code (`src/goodix_fwupdate.c`): it bundles
+  `GF_FW_VERSION="GF_ST411SEC_APP_12508"` = ours, and `strncmp(ver, GF_FW_VERSION)==0 -> return 1`
+  (skip). Our chip is 12508 → no flashing. There is also an anti-brick CRC pre-check.
+- **The only write: the PSK.** The first time `fprintd` opens the device (the first enrollment),
+  the driver provisions its own PSK again (E0 command, store sector only, reversible). **It
+  overwrites ours**, `state/linux_psk.bin`. It is "the write we approve explicitly".
+- **Backup of our PSK:** `state/linux_psk.bin` and a copy in `state/old_maps/linux_psk.bin`. Do not
+  touch them: they are needed only to go back to the Python daemon.
+- The usual rule: keep a **root shell open** (`sudo -i` in another terminal) while you edit
   `/etc/pam.d/*`.
 
-## 0. Metti da parte il nostro stack (device esclusivo: UN solo demone sul sensore)
+## 0. Put our stack aside (exclusive device: ONE daemon only on the sensor)
 
 ```fish
 sudo systemctl disable --now goodixfpd
-sudo cp /etc/pam.d/sudo.bak /etc/pam.d/sudo   # rimuove la nostra riga pam_exec (ripristina l'originale)
+sudo cp /etc/pam.d/sudo.bak /etc/pam.d/sudo   # removes our pam_exec line (restores the original)
 ```
 
-## 1. Dipendenze mancanti (il resto del toolchain c'è già)
+## 1. Missing dependencies (the rest of the toolchain is already there)
 
 ```fish
 sudo pacman -S --needed opencv doctest meson fprintd gobject-introspection libgusb gtk-doc mbedtls glib2-devel
 ```
-Note sui nomi/pacchetti:
-- GUsb su Arch/CachyOS è `libgusb` (non `gusb`).
-- **`glib2-devel` obbligatorio**: la `glib2` recente di Arch/CachyOS non spedisce più
-  `glib-mkenums`/`glib-genmarshal` (ora in `glib2-devel`); senza, il build fallisce con
+Notes on names/packages:
+- GUsb on Arch/CachyOS is `libgusb` (not `gusb`).
+- **`glib2-devel` is required**: recent Arch/CachyOS `glib2` no longer ships
+  `glib-mkenums`/`glib-genmarshal` (now in `glib2-devel`); without it the build fails with
   `Program /usr/bin/glib-mkenums found: NO`.
-- **`mbedtls` (4.x) è obbligatorio**: il driver usa l'API mbedtls 4.x e il build fa
-  `find_library('mbedtls')` → cerca `/usr/lib/libmbedtls.so`. Avere solo `mbedtls3` (3.x LTS) NON
-  basta: espone l'unversioned solo in `/usr/lib/mbedtls3/`, e il build fallisce con
-  `ERROR: C shared or static library 'mbedtls' not found`. `mbedtls` e `mbedtls3` **coesistono**
-  (header isolati: `/usr/include/mbedtls/` vs `/usr/include/mbedtls3/`); non rimuovere `mbedtls3`
-  (serve a `librist`).
-- Già installati: `ninja gcc pkgconf python openssl glib2 nss pixman libgudev systemd-libs`.
+- **`mbedtls` (4.x) is required**: the driver uses the mbedtls 4.x API and the build does
+  `find_library('mbedtls')` → it looks for `/usr/lib/libmbedtls.so`. Having only `mbedtls3`
+  (3.x LTS) is NOT enough: it exposes the unversioned library only in `/usr/lib/mbedtls3/`, and the
+  build fails with `ERROR: C shared or static library 'mbedtls' not found`. `mbedtls` and
+  `mbedtls3` **coexist** (separate headers: `/usr/include/mbedtls/` vs `/usr/include/mbedtls3/`);
+  do not remove `mbedtls3` (`librist` needs it).
+- Already installed: `ninja gcc pkgconf python openssl glib2 nss pixman libgudev systemd-libs`.
 
-## 2. Clona e installa il driver
+## 2. Clone and install the driver
 
 ```fish
 cd ~
@@ -55,81 +55,83 @@ cd goodix-linux-27c6-5125
 set -x GOODIX_LINUX $PWD        # (bash: export GOODIX_LINUX="$PWD")
 bash install-goodixgf-en.sh
 ```
-Lo script (chiede la password per i passi `sudo`): installa le deps, copia `goodixgf` + core
-protocollo nella fork, patcha `meson.build` (idempotente), **compila e installa in `/usr`**
-(SONAME invariato → `fprintd` di sistema lo riusa), installa la regola udev `70-goodix.rules`,
-aggiunge un drop-in **`--no-timeout`** a `fprintd` (indispensabile: altrimenti fprintd esce dopo
-~30s e al login lo schermo non vede il sensore), ricarica udev e riavvia `fprintd`.
+The script (it asks for the password for the `sudo` steps): installs the dependencies, copies
+`goodixgf` + the protocol core into the fork, patches `meson.build` (idempotent), **builds and
+installs into `/usr`** (unchanged SONAME → the system `fprintd` reuses it), installs the udev rule
+`70-goodix.rules`, adds a **`--no-timeout`** drop-in to `fprintd` (essential: otherwise fprintd
+exits after ~30 s and at login the screen does not see the sensor), reloads udev and restarts
+`fprintd`.
 
-## 3. Enroll — qui avviene la ri-provisioning PSK (dai l'OK)
+## 3. Enrollment — the PSK provisioning happens here (give your OK)
 
-Alla prima apertura il driver scrive la nuova PSK (nessun flash firmware). Enroll **denso**:
+On the first open the driver writes the new PSK (no firmware flashing). Enroll **densely**:
 
 ```fish
-journalctl -u fprintd -b | grep -i goodix  # conferma che goodixgf apre il device
-fprintd-delete $USER                       # pulisce enroll precedenti (ok se non c'è nulla)
-fprintd-enroll -f right-index-finger $USER # dito LONTANO al primo open (provisioning PSK + baseline),
-                                           # poi appoggia quando chiede, 3-8 volte, spostando la zona
-fprintd-verify $USER                       # ripeti qualche volta
+journalctl -u fprintd -b | grep -i goodix  # confirms that goodixgf opens the device
+fprintd-delete $USER                       # cleans previous enrollments (fine if there are none)
+fprintd-enroll -f right-index-finger $USER # finger OFF the sensor at first open (PSK provisioning + baseline),
+                                           # then place it when asked, 3-8 times, moving the area
+fprintd-verify $USER                       # repeat a few times
 ```
-Soglia matcher: `GF_SIGFM_SCORE_THRESHOLD=20` in `src/goodixgf.c` (ri-lanciare l'installer dopo una
-modifica). SIGFM vuole ≥25 keypoint SIFT per frame, altrimenti chiede un nuovo tocco.
-Premi come sbloccherai davvero (stessa zona/orientazione). Atteso ~3/4+ riconoscimenti; se basso,
-`fprintd-delete` e ri-enrolla più denso. (La nostra esperienza: la copertura è tutto — vedi
+Matcher threshold: `GF_SIGFM_SCORE_THRESHOLD=20` in `src/goodixgf.c` (run the installer again
+after a change). SIGFM wants ≥ 25 SIFT keypoints per frame, otherwise it asks for a new touch.
+Press as you will really unlock (same area/orientation). Expected ~3/4+ recognitions; if lower,
+`fprintd-delete` and enroll again more densely. (Our experience: coverage is everything — see
 `docs/matching.md`.)
 
-## 4. PAM — impronta su sudo, login, lockscreen
+## 4. PAM — fingerprint on sudo, login, lock screen
 
-Sempre `sufficient` → **fallback alla password** garantito. Con la root-shell aperta:
+Always `sufficient` → **password fallback** guaranteed. With the root shell open:
 
-- **sudo** — in cima all'`auth` di `/etc/pam.d/sudo`:
+- **sudo** — at the top of the `auth` section of `/etc/pam.d/sudo`:
   ```
   auth sufficient pam_fprintd.so
   ```
-- **login greetd** — in cima all'`auth` di `/etc/pam.d/greetd`:
+- **greetd login** — at the top of the `auth` section of `/etc/pam.d/greetd`:
   ```
   auth sufficient pam_fprintd.so
   ```
-- **lockscreen** — stessa riga nel file PAM del tuo locker (swaylock/hyprlock/…).
+- **lock screen** — the same line in your locker's PAM file (swaylock/hyprlock/…).
 
-Test: nuovo terminale, `sudo -k; sudo -v` → tocca; deve passare senza password. Non toccando →
-password come sempre.
+Test: a new terminal, `sudo -k; sudo -v` → touch; it must pass without a password. Without
+touching → password as usual.
 
-## 5. noctalia — password + impronta concorrenti al login
+## 5. noctalia — password and fingerprint concurrently at login
 
-La tua `noctalia-greeter 1.7.0` ha già il supporto (stringhe `allow_empty_password`,
+Your `noctalia-greeter 1.7.0` already supports it (strings `allow_empty_password`,
 `build fingerprint`; [Issue #35](https://github.com/noctalia-dev/noctalia-greeter/issues/35),
-[PR #158](https://github.com/noctalia-dev/noctalia-greeter/pull/158)). Nel `greeter.toml`
-(`/var/lib/noctalia-greeter/greeter.toml`, gestito da `noctalia-greeter-apply-appearance
---setup-system`, chownato all'utente `greeter`):
+[PR #158](https://github.com/noctalia-dev/noctalia-greeter/pull/158)). In `greeter.toml`
+(`/var/lib/noctalia-greeter/greeter.toml`, managed by `noctalia-greeter-apply-appearance
+--setup-system`, owned by the `greeter` user):
 
 ```toml
 [auth]
 allow_empty_password = true
-# request_timeout = 60   # opzionale (0 disabilita il timeout)
+# request_timeout = 60   # optional (0 disables the timeout)
 ```
-**Attenzione:** la chiave DEVE stare **sotto l'header `[auth]`**, non a livello root del file (una
-`allow_empty_password = true` messa prima di qualsiasi `[sezione]` finisce nella tabella root e
-viene ignorata). Verifica con `sudo cat .../greeter.toml | grep -A1 '\[auth\]'`.
+**Warning:** the key MUST be **under the `[auth]` header**, not at the root level of the file (an
+`allow_empty_password = true` placed before any `[section]` ends up in the root table and is
+ignored). Check with `sudo cat .../greeter.toml | grep -A1 '\[auth\]'`.
 
-Al login: **tocchi per entrare, oppure digiti la password** (la password digitata va in coda e
-risponde al prompt solo se l'impronta fallisce/scade).
+At login: **touch to get in, or type the password** (a typed password is queued and answers the
+prompt only if the fingerprint fails/times out).
 
-## 6. Rollback (se qualcosa non va)
+## 6. Rollback (if something goes wrong)
 
 ```fish
 cd ~/goodix-linux-27c6-5125; bash uninstall-goodixgf-en.sh
 sudo cp /etc/pam.d/sudo.bak /etc/pam.d/sudo
-# togli a mano le righe pam_fprintd da /etc/pam.d/greetd e dal locker
+# remove the pam_fprintd lines from /etc/pam.d/greetd and from the locker by hand
 ```
-Per tornare al demone Python serve ri-appaiare la NOSTRA PSK sul sensore (il driver goodixgf l'ha
-sovrascritta): `goodixfpd` fermo → `python lab/driver_5125.py --write` con `state/linux_psk.bin` →
-`sudo systemctl enable --now goodixfpd`.
+Going back to the Python daemon requires pairing OUR PSK with the sensor again (the goodixgf
+driver overwrote it): `goodixfpd` stopped → `python lab/driver_5125.py --write` with
+`state/linux_psk.bin` → `sudo systemctl enable --now goodixfpd`.
 
-## Note
+## Notes
 
-- **Dual-boot Windows** riscrive la PSK → va rifatto l'enroll/re-pair (vale per qualsiasi stack).
-- `fprintd` e `goodixfpd` **non insieme** (device busy): tienine UNO solo attivo.
-- **Contributo upstream** (dopo): le nostre misure (enroll denso, sessione calda, risveglio dal
-  powerdown idle, FRR/FAR, `docs/protocol.md`/`matching.md`) a goodix-fp-linux-dev — è il valore
-  aperto che quei progetti (single-tester) non hanno.
+- **Dual-boot Windows** rewrites the PSK → enrollment/re-pairing must be redone (true for any
+  stack).
+- `fprintd` and `goodixfpd` **not together** (device busy): keep only ONE active.
+- **Upstream contribution** (later): our measurements (dense enrollment, warm session, waking up
+  from idle powerdown, FRR/FAR, `docs/protocol.md`/`matching.md`) to goodix-fp-linux-dev — the
+  open value that those (single-tester) projects lack.

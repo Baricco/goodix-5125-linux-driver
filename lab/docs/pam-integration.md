@@ -1,113 +1,114 @@
-# Login a impronta con goodixfpd (Strada A)
+# Fingerprint login with goodixfpd (Path A)
 
-Integrazione dell'impronta nello stack di autenticazione Linux **senza** il driver C: un demone
-di sistema (`lab/daemon/goodixfpd.py`) possiede il sensore ed espone una verify su socket Unix; PAM
-lo interroga con un piccolo client (`lab/daemon/goodixfp-verify`). Copre `sudo`, lo sblocco schermo e
-il login al greeter. È la via rapida per usarlo *adesso*; la via canonica e pubblicabile per tutti
-resta il driver libfprint (Strada B, `lab/docs/porting-c.md`).
+Integration of the fingerprint into the Linux authentication stack **without** the C driver: a
+system daemon (`lab/daemon/goodixfpd.py`) owns the sensor and exposes a verify over a Unix
+socket; PAM queries it through a small client (`lab/daemon/goodixfp-verify`). It covers `sudo`,
+the lock screen and the greeter login. It is the quick way to use it *now*; the canonical path,
+publishable for everyone, remains the libfprint driver (Path B, `lab/docs/porting-c.md`).
 
-> **Regola d'oro anti-lockout:** l'impronta è sempre un fattore `sufficient` con *fallback alla
-> password*. Non metterla mai `required` da sola. Durante il setup tieni **una shell root già
-> aperta** (`sudo -i` in un altro terminale) finché non hai verificato che tutto funziona.
+> **Golden anti-lockout rule:** the fingerprint is always a `sufficient` factor with *password
+> fallback*. Never make it `required` alone. During setup keep **a root shell already open**
+> (`sudo -i` in another terminal) until you have checked that everything works.
 
-## Architettura
+## Architecture
 
 ```
- [PAM: sudo / login]  →  goodixfp-verify  →  /run/goodixfpd/sock  →  goodixfpd  →  sensore
-                         (client, root)        (0660 root:goodixfp)   (utente goodixfp)
+ [PAM: sudo / login]  →  goodixfp-verify  →  /run/goodixfpd/sock  →  goodixfpd  →  sensor
+                         (client, root)        (0660 root:goodixfp)   (user goodixfp)
 ```
 
-- Il demone gira come utente di sistema **`goodixfp`**, non root; accede al sensore via gruppo
-  `goodixfp` (regola udev `70-goodixfp.rules`).
-- Verifica il chiamante con `SO_PEERCRED`: accetta solo root (lo stack PAM) o l'utente stesso.
-- Le impronte stanno in `/var/lib/goodixfp/<utente>/*.npz` (formato `FragmentMapper`).
-- Il demone non tocca mai la flash del sensore (niente provisioning E0) e non restituisce mai
-  dati biometrici, solo esito + score.
+- The daemon runs as the system user **`goodixfp`**, not root; it reaches the sensor through
+  the `goodixfp` group (udev rule `70-goodixfp.rules`).
+- It checks the caller with `SO_PEERCRED`: it accepts only root (the PAM stack) or the user
+  themselves.
+- Fingerprints live in `/var/lib/goodixfp/<user>/*.npz` (`FragmentMapper` format).
+- The daemon never touches the sensor's flash (no E0 provisioning) and never returns biometric
+  data, only outcome + score.
 
-## Installazione rapida (script)
+## Quick installation (scripts)
 
-Il progetto gira come servizio di sistema da `/opt/goodix-driver` (copia di produzione, di
-proprietà di root: il codice di autenticazione non deve essere scrivibile da un utente normale).
-Lo sviluppo resta in `~/goodix-driver`.
+The project runs as a system service from `/opt/goodix-driver` (production copy, owned by root:
+the authentication code must not be writable by a normal user). Development stays in
+`~/goodix-driver`.
 
 ```bash
-sudo lab/daemon/install.sh        # utente+gruppo, deploy in /opt (venv ricreato + PSK), udev, systemd
-# ...registra un'impronta e collauda il socket (lo stampa install.sh), POI colleghi PAM...
-sudo lab/daemon/deploy.sh         # ri-sincronizza /opt dopo ogni modifica al codice
-sudo lab/daemon/uninstall.sh      # rimuove tutto (aggiungi --purge per impronte+utente)
+sudo lab/daemon/install.sh        # user+group, deploy to /opt (venv recreated + PSK), udev, systemd
+# ...enroll a fingerprint and test the socket (install.sh prints how), THEN hook up PAM...
+sudo lab/daemon/deploy.sh         # resyncs /opt after every code change
+sudo lab/daemon/uninstall.sh      # removes everything (add --purge for fingerprints+user)
 ```
 
-`install.sh` **non** tocca PAM: lo colleghi a mano col collaudo sicuro qui sotto. Il resto di
-questa pagina spiega i singoli passi (utili se preferisci farli manualmente o per capire cosa fanno
-gli script).
+`install.sh` does **not** touch PAM: you hook it up by hand with the safe test below. The rest
+of this page explains the single steps (useful if you prefer to do them by hand, or to understand
+what the scripts do).
 
-## Installazione manuale (equivalente agli script)
+## Manual installation (equivalent to the scripts)
 
 ```bash
-# 1. utente e gruppo di sistema dedicati
+# 1. dedicated system user and group
 sudo groupadd -r goodixfp
 sudo useradd  -r -g goodixfp -s /usr/sbin/nologin -d /var/lib/goodixfp goodixfp
 
-# 2. accesso al sensore per il gruppo (sostituisce la vecchia 70-goodix-5125.rules)
+# 2. sensor access for the group (replaces the old 70-goodix-5125.rules)
 sudo cp lab/daemon/70-goodixfp.rules /etc/udev/rules.d/
 sudo rm -f /etc/udev/rules.d/70-goodix-5125.rules
 sudo udevadm control --reload && sudo udevadm trigger
 
-# 3. client PAM
+# 3. PAM client
 sudo install -Dm755 lab/daemon/goodixfp-verify /usr/local/lib/goodixfp/goodixfp-verify
 
-# 4. demone
+# 4. daemon
 sudo cp lab/daemon/goodixfpd.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now goodixfpd
-systemctl status goodixfpd          # deve stampare "in ascolto su /run/goodixfpd/sock"
+systemctl status goodixfpd          # must print "listening on /run/goodixfpd/sock"
 ```
 
-## Registrare un'impronta
+## Enrolling a fingerprint
 
-L'enroll si fa con la GUI (da utente, denso: riempi i buchi rossi fino a "copertura buona"):
+Enrollment is done with the GUI (as the user, densely: fill the red holes until "good
+coverage"):
 
 ```bash
-tools/.venv/bin/python lab/enroll_gui.py       # mappa + Salva -> state/fingers/<nome>.npz
+tools/.venv/bin/python lab/enroll_gui.py       # map + Save -> state/fingers/<name>.npz
 ```
 
-Poi copia il template nello store di sistema del tuo utente:
+Then copy the template into your user's system store:
 
 ```bash
 sudo install -Dm640 -o root -g goodixfp \
-     state/fingers/<nome>.npz /var/lib/goodixfp/$USER/<nome>.npz
+     state/fingers/<name>.npz /var/lib/goodixfp/$USER/<name>.npz
 ```
 
-Puoi registrare più impronte (più `.npz`): la verify le prova tutte.
+You can enroll several fingerprints (several `.npz` files): verification tries them all.
 
-## Collaudo SICURO (nell'ordine)
+## SAFE testing (in this order)
 
-1. **Socket, senza PAM.** Da utente, tocca il sensore quando richiesto:
+1. **Socket, without PAM.** As the user, touch the sensor when asked:
    ```bash
-   GOODIXFP_SOCKET=/run/goodixfpd/sock python lab/daemon/goodixfp-verify $USER ; echo "esito=$?"
+   GOODIXFP_SOCKET=/run/goodixfpd/sock python lab/daemon/goodixfp-verify $USER ; echo "result=$?"
    ```
-   `esito=0` = riconosciuto. Ripeti con un altro dito: deve dare `1`.
+   `result=0` = recognized. Repeat with another finger: it must give `1`.
 
-2. **sudo.** Con la shell root aperta a parte, aggiungi *in cima* a `/etc/pam.d/sudo`:
+2. **sudo.** With the root shell open on the side, add *at the top* of `/etc/pam.d/sudo`:
    ```
    auth  sufficient  pam_exec.so  quiet  /usr/local/lib/goodixfp/goodixfp-verify
    ```
-   Apri un nuovo terminale, `sudo -v`: tocca il sensore → niente password. Se il sensore
-   fallisce, deve chiedere la password come sempre. Se qualcosa va storto, la shell root già
-   aperta ti salva.
+   Open a new terminal, `sudo -v`: touch the sensor → no password. If the sensor fails, it must
+   ask for the password as usual. If something goes wrong, the root shell already open saves you.
 
-3. **Blocco schermo** (es. `/etc/pam.d/system-local-login` o il PAM del tuo lock) e infine **login
-   al greeter**, solo dopo che sudo è solido. Stessa riga `sufficient`.
+3. **Lock screen** (e.g. `/etc/pam.d/system-local-login` or your locker's PAM file) and finally
+   **greeter login**, only after sudo is solid. Same `sufficient` line.
 
-## Limiti noti (onesti)
+## Known limits (honest)
 
-- **Falsi negativi = copertura.** Il sensore è piccolo e a tocco: la verify accetta se la pressione
-  cade su una zona registrata. Enroll denso + un paio di ritenute risolvono. Gli impostori restano
-  a 0 (FAR ottimo). Vedi `docs/matching.md`.
-- **Latenza.** Il demone apre il sensore on-demand (reset + sync + TLS ≈ qualche secondo). Una
-  sessione calda persistente è un miglioramento futuro.
-- **Wedge.** Se il sensore si blocca a fondo oggi serve la VM Windows per rianimarlo (vedi stato
-  del progetto). Il reset vendor 100% Linux è lo step successivo del piano. Il demone fa teardown
-  pulito a ogni verify proprio per non arrivarci.
-- **Sicurezza biometria.** L'impronta non è un segreto forte; usala come comodità accanto alla
-  password, non come unico fattore su macchine a rischio.
+- **False negatives = coverage.** The sensor is small and touch-based: verification accepts if
+  the press lands on an enrolled area. Dense enrollment + a couple of retries solve it. Impostors
+  stay at 0 (excellent FAR). See `docs/matching.md`.
+- **Latency.** The daemon opens the sensor on demand (reset + sync + TLS ≈ a few seconds). A
+  persistent warm session is a future improvement.
+- **Wedge.** If the sensor locks up deeply, today the Windows VM is needed to revive it (see the
+  project status). A 100% Linux vendor reset is the next step of the plan. The daemon tears down
+  cleanly after every verify precisely to avoid getting there.
+- **Biometric security.** A fingerprint is not a strong secret; use it as a convenience next to
+  the password, not as the only factor on machines at risk.

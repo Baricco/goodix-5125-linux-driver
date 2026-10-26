@@ -1,8 +1,8 @@
 /* main.c - goodixfpd.
  *
- * Avviato al posto di fprintd (drop-in di fprintd.service). Se il lettore
- * Goodix 27c6:5125/5135 non c'e' cede il posto al vero fprintd con gli
- * stessi argomenti, cosi' su altre macchine non cambia nulla.
+ * Started instead of fprintd (fprintd.service drop-in). If the Goodix
+ * 27c6:5125/5135 reader is not present it hands over to the real fprintd with
+ * the same arguments, so nothing changes on other machines.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -110,8 +110,8 @@ main (int argc, char **argv)
     }
   manager = gxd_manager_new (connection, device);
 
-  /* Il nome si prende a oggetti esportati: chi chiede subito i dispositivi
-   * li trova. */
+  /* The name is taken once the objects are exported: whoever asks for the
+   * devices right away finds them. */
   owner = g_bus_own_name_on_connection (connection, GXD_SERVICE_NAME,
                                         G_BUS_NAME_OWNER_FLAGS_NONE,
                                         NULL, on_name_lost, loop, NULL);

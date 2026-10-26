@@ -1,11 +1,11 @@
-/* test-template.c - impronte: formato su disco, archivio, confronto.
+/* test-template.c - fingerprints: on-disk format, storage, matching.
  *
- * Con GXD_DATASET=<dir> (acquisizioni reali: enroll/, genuine/, impostor/
- * con i dump imgproc-*-{raw16,base16,fresh16,ridge8}.pgm) verifica anche:
- *   - che la pipeline immagine ricostruisca ridge8 dal grezzo;
- *   - FAR = 0 e FRR entro il limite sul confronto SIFT/SIGFM in C;
- * e stampa la distribuzione dei punteggi (taratura dell'apprendimento).
- * I dati biometrici restano fuori dal repository.
+ * With GXD_DATASET=<dir> (real captures: enroll/, genuine/, impostor/ with
+ * the imgproc-*-{raw16,base16,fresh16,ridge8}.pgm dumps) it also checks:
+ *   - that the image pipeline rebuilds ridge8 from the raw frames;
+ *   - FAR = 0 and FRR within the limit for the SIFT/SIGFM matching in C;
+ * and prints the score distribution (to tune learning).
+ * Biometric data stays out of the repository.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -23,7 +23,7 @@
 
 #define W 80
 #define H 64
-#define MAX_FRR 0.15     /* produzione (OpenCV) su questi dati: 3/25 */
+#define MAX_FRR 0.15     /* production (OpenCV) on this data: 3/25 */
 
 /* ---- PGM ---- */
 
@@ -38,14 +38,14 @@ read_pgm (const char *path, int *maxval)
     return NULL;
   if (sscanf (buf, "P5 %d %d %d%n", &w, &h, &mv, &off) != 3 || w != W || h != H)
     return NULL;
-  off++;                        /* un solo spazio dopo maxval */
+  off++;                        /* a single whitespace after maxval */
   *maxval = mv;
   if (len - off < (gsize) (W * H * (mv > 255 ? 2 : 1)))
     return NULL;
   return g_memdup2 (buf + off, len - off);
 }
 
-/* PGM 16 bit (big endian) -> trama del sensore (16 bit little endian) */
+/* 16-bit PGM (big endian) -> sensor frame (16-bit little endian) */
 static gboolean
 read_pgm16 (const char *path, guint8 *img16)
 {
@@ -114,7 +114,7 @@ load_set (const char *dir, int *pipeline_checked, int *pipeline_exact)
       g_assert_cmpint (gx_sift_extract (s->img8, W, H, &s->fs), ==, 0);
       g_ptr_array_add (shots, s);
 
-      /* stessa pipeline del servizio, dal grezzo */
+      /* same pipeline as the service, from the raw frame */
       if (read_pgm16 (praw, raw) && read_pgm16 (pbase, gx->img_base))
         {
           struct gx_imgproc_params p = GX_IMGPROC_SIGFM_PARAMS;
@@ -143,7 +143,7 @@ test_dataset (void)
 
   if (!root || !*root)
     {
-      g_test_skip ("GXD_DATASET non impostato");
+      g_test_skip ("GXD_DATASET not set");
       return;
     }
   de = g_build_filename (root, "enroll", NULL);
@@ -152,7 +152,7 @@ test_dataset (void)
   enroll = load_set (de, &checked, &exact);
   genuine = load_set (dg, &checked, &exact);
   impostor = load_set (di, &checked, &exact);
-  g_test_message ("pipeline: %d/%d immagini identiche ai dump di produzione", exact, checked);
+  g_test_message ("pipeline: %d/%d images identical to the production dumps", exact, checked);
   g_assert_cmpint (exact, ==, checked);
 
   tpl = gxd_template_new ("tester", 7);
@@ -183,13 +183,13 @@ test_dataset (void)
                       m.best_score, m.frames_matched, m.matched ? "MATCH" : "-");
       false_acc += m.matched;
     }
-  g_test_message ("template %u frame; genuini %d/%u accettati; impostori %d/%u accettati",
+  g_test_message ("template %u frames; genuine %d/%u accepted; impostors %d/%u accepted",
                   tpl->frames->len, accepted, genuine->len, false_acc, impostor->len);
   g_assert_cmpint (false_acc, ==, 0);
   g_assert_cmpfloat (1.0 - (double) accepted / genuine->len, <=, MAX_FRR);
 
-  /* Apprendimento in linea: ogni genuino e' giudicato prima di poterne
-   * imparare; alla fine nessun impostore deve passare. */
+  /* Online learning: every genuine touch is judged before it can be learned
+   * from; at the end no impostor may pass. */
   {
     int online = 0, learned = 0;
 
@@ -211,8 +211,8 @@ test_dataset (void)
         gxd_template_match (tpl, &s->fs, &m);
         false_acc += m.matched;
       }
-    g_test_message ("apprendimento: %d/%u accettati in linea, %d frame appresi, "
-                    "impostori dopo %d/%u", online, genuine->len, learned,
+    g_test_message ("learning: %d/%u accepted online, %d frames learned, "
+                    "impostors afterwards %d/%u", online, genuine->len, learned,
                     false_acc, impostor->len);
     g_assert_cmpint (online, >=, accepted);
     g_assert_cmpint (false_acc, ==, 0);
@@ -233,7 +233,7 @@ test_learn_policy (void)
   gxd_template_add (tpl, &fs, GXD_FRAME_ENROLLED, 1);
   gxd_template_add (tpl, &fs, GXD_FRAME_ENROLLED, 1);
 
-  /* niente apprendimento senza margine o in zona gia' coperta */
+  /* no learning without margin or in an area already covered */
   m.best_score = GXD_LEARN_MIN_SCORE - 1;
   g_assert_false (gxd_template_learn (tpl, &fs, &m, 2));
   m.best_score = 500;
@@ -255,7 +255,7 @@ test_learn_policy (void)
       else
         {
           learned++;
-          g_assert_cmpint (fr->added, >=, 105);      /* i 5 piu' vecchi sono usciti */
+          g_assert_cmpint (fr->added, >=, 105);      /* the 5 oldest ones are gone */
         }
     }
   g_assert_cmpuint (enrolled, ==, 2);
@@ -265,7 +265,7 @@ test_learn_policy (void)
   gx_featset_clear (&fs);
 }
 
-/* ---- formato e archivio ---- */
+/* ---- format and storage ---- */
 
 static void
 fake_featset (struct gx_featset *fs, guint n, guint seed)
@@ -320,7 +320,7 @@ test_roundtrip (void)
     g_assert_cmpint (f1->added, ==, 20);
   }
 
-  /* dati alterati: rifiutati, mai letti a meta' */
+  /* altered data: rejected, never half read */
   raw = g_bytes_unref_to_data (g_steal_pointer (&bytes), &len);
   raw[len / 2] ^= 0xff;
   raw[len - 3] ^= 0x55;
@@ -381,7 +381,7 @@ test_storage (void)
   g_assert_error (error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND);
   g_clear_error (&error);
 
-  /* il file di un altro utente non vale per mario */
+  /* another user's file is not valid for mario */
   {
     g_autofree char *src = g_build_filename (dir, "goodixfpd", "luigi", "right-index-finger", NULL);
     g_autofree char *dst = g_build_filename (dir, "goodixfpd", "mario", "right-index-finger", NULL);
@@ -402,7 +402,7 @@ test_storage (void)
   g_assert_cmpuint (all->len, ==, 2);
 
   g_assert_true (gxd_storage_delete ("mario", 2, &error));
-  g_assert_true (gxd_storage_delete ("mario", 2, &error));   /* gia' assente */
+  g_assert_true (gxd_storage_delete ("mario", 2, &error));   /* already absent */
   g_assert_false (gxd_storage_valid_username ("../etc"));
   g_assert_false (gxd_storage_valid_username (".."));
   g_assert_false (gxd_storage_valid_username (""));

@@ -1,60 +1,64 @@
-# Recupero del sensore bloccato (VM Windows)
+# Recovering a stuck sensor (Windows VM)
 
-Raramente, dopo un crash a metà della sessione cifrata, il sensore entra in uno
-stato in cui **si vede su USB ma non risponde a nessun comando**. Il reset USB,
-il riavvio e anche lo spegnimento completo non bastano, perché il sensore nel
-tasto di accensione resta alimentato. Il driver Goodix per Windows lo
-reinizializza: basta farlo girare in una macchina virtuale con il sensore
-passato via USB. Procedura provata su MateBook CREM-WXX9, firmware 12508.
+Rarely, after a crash in the middle of the encrypted session, the sensor gets
+into a state where **it shows up on USB but answers no command**. A USB reset,
+a reboot and even a full power-off are not enough, because the sensor in the
+power button stays powered. The Goodix Windows driver reinitializes it: it is
+enough to run it in a virtual machine with the sensor passed through over USB.
+Procedure tested on a MateBook CREM-WXX9, firmware 12508.
 
-Prima di tutto prova le cose semplici: `sudo systemctl restart fprintd`, poi un
-riavvio.
+First of all try the simple things: `sudo systemctl restart fprintd`, then a
+reboot.
 
-## Cosa serve
+## What you need
 
-- `Virtualization Technology` attivo nel BIOS ([`docs/bios.md`](bios.md)).
-- QEMU/KVM, per esempio con [quickemu](https://github.com/quickemu-project/quickemu),
-  e una VM Windows 10/11.
-- Il driver Goodix **1.1.125.12 o 1.1.125.13** dal Microsoft Update Catalog
-  (cerca `27c6 5125`). Queste versioni contengono lo **stesso firmware 12508**
-  del sensore. Le versioni da 1.1.125.14 in poi contengono firmware più nuovi
-  (12509, 12512) e **lo flasherebbero sul sensore**: non usarle.
+- `Virtualization Technology` enabled in the BIOS ([`docs/bios.md`](bios.md)).
+- QEMU/KVM, for example with [quickemu](https://github.com/quickemu-project/quickemu),
+  and a Windows 10/11 VM.
+- The Goodix driver **1.1.125.12 or 1.1.125.13** from the Microsoft Update
+  Catalog (search for `27c6 5125`). These versions contain the **same firmware
+  12508** as the sensor. Versions from 1.1.125.14 on contain newer firmware
+  (12509, 12512) and **would flash it onto the sensor**: do not use them.
 
-## Regole per non far aggiornare il firmware
+## Rules to keep the firmware from being updated
 
-1. **Rete della VM spenta** prima di collegare il sensore, così Windows Update
-   non scarica un driver più nuovo. Con quickemu: monitor HMP, `set_link <nic> off`.
-   L'impostazione si azzera a ogni riavvio della VM.
-2. Installa nella VM **solo** il driver 1.1.125.13 (`pnputil /add-driver <inf> /install`).
-3. Nel registro della VM imposta
+1. **VM network off** before attaching the sensor, so Windows Update does not
+   download a newer driver. With quickemu: HMP monitor, `set_link <nic> off`.
+   The setting resets at every VM reboot.
+2. Install **only** driver 1.1.125.13 in the VM
+   (`pnputil /add-driver <inf> /install`).
+3. In the VM's registry set
    `HKLM\SOFTWARE\Goodix\FP\FirmwareUpdateSwitch = 0` (DWORD).
 
-## Procedura
+## Procedure
 
-1. Su Linux ferma chi usa il sensore: `sudo systemctl stop fprintd`.
-2. Avvia la VM e collega il sensore dal monitor QEMU, sul bus **xhci** (con
-   quickemu si chiama `spicepass.0`; su un bus EHCI il sensore dà errore di
-   velocità):
+1. On Linux stop whatever uses the sensor: `sudo systemctl stop fprintd`.
+2. Start the VM and attach the sensor from the QEMU monitor, on the **xhci**
+   bus (with quickemu it is called `spicepass.0`; on an EHCI bus the sensor
+   gives a speed error):
    ```
    device_add usb-host,vendorid=0x27c6,productid=0x5125,id=goodix,bus=spicepass.0
    ```
-3. In Windows il dispositivo compare in Gestione dispositivi (Biometria) con
-   stato OK. Forza la reinizializzazione da PowerShell amministratore:
+3. In Windows the device shows up in Device Manager (Biometric devices) with
+   status OK. Force a reinitialization from an administrator PowerShell:
    ```powershell
    $d = Get-PnpDevice | Where-Object { $_.InstanceId -like '*VID_27C6&PID_5125*' }
    Disable-PnpDevice -InstanceId $d.InstanceId -Confirm:$false
    Enable-PnpDevice  -InstanceId $d.InstanceId -Confirm:$false
    ```
-4. Scollega il sensore dalla VM (`device_del goodix` nel monitor) e spegni la VM.
-5. Su Linux: `sudo systemctl start fprintd`, poi `fprintd-verify`.
+4. Detach the sensor from the VM (`device_del goodix` in the monitor) and shut
+   the VM down.
+5. On Linux: `sudo systemctl start fprintd`, then `fprintd-verify`.
 
-Windows ha riscritto la **propria** chiave PSK nel sensore. Al primo avvio il
-driver Linux se ne accorge ("local PSK mismatch with MCU") e scrive di nuovo la
-sua: non devi fare niente. Le impronte registrate restano valide.
+Windows has written **its own** PSK into the sensor. On the first start the
+Linux driver notices ("local PSK mismatch with MCU") and synchronizes again:
+it reads the new key back from the sensor or, if it cannot, writes its own.
+You do not have to do anything. Enrolled fingerprints stay valid.
 
-## Prevenzione
+## Prevention
 
-Il blocco profondo viene da sessioni interrotte a metà handshake (crash ripetuti
-di chi tiene aperto il sensore). `goodixfpd` chiude sempre la sessione in modo
-pulito (anche quando il client sparisce, come fa pam_fprintd dopo un accesso
-riuscito) e resta residente, senza riavvii a ogni accesso.
+The deep lock-up comes from sessions interrupted in the middle of the
+handshake (repeated crashes of whatever keeps the sensor open). `goodixfpd`
+always closes the session cleanly (even when the client disappears, as
+pam_fprintd does after a successful login) and stays resident, without
+restarting at every login.

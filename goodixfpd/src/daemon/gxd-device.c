@@ -1,20 +1,20 @@
-/* gxd-device.c - l'oggetto net.reactivated.Fprint.Device.
+/* gxd-device.c - the net.reactivated.Fprint.Device object.
  *
- * Riproduce il contratto di fprintd (src/device.c, 1.94): sessioni con
- * Claim/Release, un'operazione alla volta, segnali VerifyStatus/EnrollStatus
- * con gli stessi nomi e lo stesso "done", controlli polkit sulle stesse
- * azioni, chiusura del dispositivo quando il client che l'ha preso sparisce
- * dal bus (pam_fprintd, dopo un accesso riuscito, non chiama Release).
+ * Reproduces fprintd's contract (src/device.c, 1.94): sessions with
+ * Claim/Release, one operation at a time, VerifyStatus/EnrollStatus signals
+ * with the same names and the same "done", polkit checks on the same actions,
+ * closing the device when the client that claimed it leaves the bus
+ * (pam_fprintd does not call Release after a successful login).
  *
- * Il dispositivo si comporta come il driver libfprint goodixgf che sostituisce
- * (sensore a pressione con identificazione), quindi come fprintd con quel
- * driver:
- *   - verifica di un dito, o identificazione fra tutti quelli dell'utente
- *     ("any" con piu' dita registrate);
- *   - registrazione preceduta da un tocco di controllo dei duplicati fra le
- *     impronte di tutti gli utenti (num-enroll-stages = stadi + 1);
- *   - registrazione dinamica fra 15 e 30 tocchi in posizioni diverse.
- * In piu' la verifica riuscita puo' far crescere l'impronta (gxd_template_learn).
+ * The device behaves like the libfprint goodixgf driver it replaces (press
+ * sensor with identification), hence like fprintd with that driver:
+ *   - verification of one finger, or identification among all of the user's
+ *     fingers ("any" with more than one finger enrolled);
+ *   - enrollment preceded by a duplicate-check touch against the fingerprints
+ *     of all users (num-enroll-stages = stages + 1);
+ *   - dynamic enrollment of 15 to 30 touches in different positions.
+ * In addition, a successful verification can make the fingerprint grow
+ * (gxd_template_learn).
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -25,12 +25,12 @@
 #include "gxd-storage.h"
 #include "gxd-template.h"
 
-/* Registrazione: stessi valori del driver goodixgf. */
+/* Enrollment: same values as the goodixgf driver. */
 #define ENROLL_MIN_STAGES  15
 #define ENROLL_MAX_STAGES  30
-#define ENROLL_DUP_STOP     4     /* tocchi ripetuti di fila che chiudono */
-#define ENROLL_MIN_DIFF   8.0     /* differenza media (0..255) sotto la quale
-                                   * due tocchi sono "stessa posizione" */
+#define ENROLL_DUP_STOP     4     /* repeated touches in a row that end it */
+#define ENROLL_MIN_DIFF   8.0     /* mean difference (0..255) below which
+                                   * two touches are "the same position" */
 
 typedef enum {
   ACTION_NONE,
@@ -49,7 +49,7 @@ typedef enum {
   PERM_SETUSERNAME = 1 << 2,
 } Perm;
 
-/* In ordine di priorita', come in fprintd. */
+/* In order of priority, as in fprintd. */
 static const struct {
   Perm        perm;
   const char *action;
@@ -70,7 +70,7 @@ typedef struct {
   gint     ref;
   char    *sender;
   char    *username;
-  gboolean busy;                  /* Claim o Release in corso */
+  gboolean busy;                  /* Claim or Release in progress */
   gboolean verify_status_reported;
   gboolean vanished;
 } Session;
@@ -81,31 +81,31 @@ struct _GxdDevice
 
   GxdSensor       *sensor;
   PolkitAuthority *auth;
-  GHashTable      *clients;       /* sender -> id del watch */
+  GHashTable      *clients;       /* sender -> watch id */
 
-  GMutex           lock;          /* session: letta anche dal thread di autorizzazione */
+  GMutex           lock;          /* session: also read by the authorization thread */
   Session         *session;
 
   Action           action;
   GCancellable    *open_cancellable;
-  GDBusMethodInvocation *pending;          /* Claim/Release in corso */
-  GDBusMethodInvocation *cancel_invocation; /* VerifyStop/EnrollStop in attesa */
+  GDBusMethodInvocation *pending;          /* Claim/Release in progress */
+  GDBusMethodInvocation *cancel_invocation; /* VerifyStop/EnrollStop waiting */
 
-  /* operazione interrompibile (verifica, identificazione, registrazione) */
+  /* interruptible operation (verification, identification, enrollment) */
   gboolean         running;
   gboolean         cancelled;
-  gboolean         finishing;     /* esito deciso, si ferma la scansione */
+  gboolean         finishing;     /* outcome decided, the scan is stopping */
   gboolean         scan_stopped;
-  gboolean         matching;      /* confronto in un thread */
-  gboolean         done_reported; /* segnale finale gia' emesso */
-  GQueue           backlog;       /* GxdScan arrivati durante un confronto */
+  gboolean         matching;      /* matching in a thread */
+  gboolean         done_reported; /* final signal already emitted */
+  GQueue           backlog;       /* GxdScans that arrived during a match */
 
-  GPtrArray       *gallery;       /* GxdTemplate da confrontare */
+  GPtrArray       *gallery;       /* GxdTemplates to match against */
   gboolean         learn;
 
   int              enroll_finger;
   gboolean         enroll_dup_phase;
-  GPtrArray       *enroll_scans;  /* GxdScan accettati */
+  GPtrArray       *enroll_scans;  /* accepted GxdScans */
   int              enroll_stages;
   int              dup_streak;
   gboolean         converged;
@@ -123,7 +123,7 @@ static void process_scan (GxdDevice *self, GxdScan *scan);
 static void close_session (GxdDevice *self);
 static void op_finish (GxdDevice *self, gboolean cancelled);
 
-/* ---- sessione ---- */
+/* ---- session ---- */
 
 static Session *
 session_ref (Session *s)
@@ -173,7 +173,7 @@ session_set_busy (GxdDevice *self, gboolean busy)
     self->session->busy = busy;
 }
 
-/* ---- client sul bus ---- */
+/* ---- client on the bus ---- */
 
 static void
 client_vanished (GDBusConnection *connection, const char *name, gpointer data)
@@ -188,13 +188,13 @@ client_vanished (GDBusConnection *connection, const char *name, gpointer data)
       switch (self->action)
         {
         case ACTION_OPEN:
-          g_cancellable_cancel (self->open_cancellable);  /* chiude a fine apertura */
+          g_cancellable_cancel (self->open_cancellable);  /* close when opening completes */
           break;
         case ACTION_CLOSE:
-          break;                                          /* gia' in chiusura */
+          break;                                          /* already closing */
         default:
           if (self->running)
-            op_finish (self, TRUE);     /* chiude a operazione conclusa */
+            op_finish (self, TRUE);     /* close once the operation is over */
           else
             close_session (self);
         }
@@ -222,7 +222,7 @@ add_client (GxdDevice *self, GDBusMethodInvocation *invocation)
                                            NULL, client_vanished, self, NULL)));
 }
 
-/* ---- autorizzazione (thread dedicato di GDBus) ---- */
+/* ---- authorization (GDBus's dedicated thread) ---- */
 
 static ClaimState
 claim_state_for (const char *method)
@@ -285,7 +285,7 @@ perms_for (const char *method)
   if (g_str_equal (method, "ListEnrolledFingers") ||
       g_str_equal (method, "VerifyStart"))
     return PERM_VERIFY;
-  /* Release, VerifyStop, EnrollStop: chi ha potuto iniziare puo' fermare */
+  /* Release, VerifyStop, EnrollStop: whoever could start may stop */
   return PERM_NONE;
 }
 
@@ -322,8 +322,8 @@ check_polkit (GxdDevice *self, GDBusMethodInvocation *invocation, Perm perms, GE
   return FALSE;
 }
 
-/* Utente su cui si opera: quello del chiamante, oppure quello richiesto se il
- * chiamante ha net.reactivated.fprint.device.setusername. */
+/* User being operated on: the caller, or the requested one if the caller
+ * holds net.reactivated.fprint.device.setusername. */
 static char *
 resolve_username (GxdDevice *self, GDBusMethodInvocation *invocation,
                   const char *requested, GError **error)
@@ -398,7 +398,7 @@ denied:
   return FALSE;
 }
 
-/* ---- stato delle operazioni ---- */
+/* ---- operation state ---- */
 
 static gboolean
 can_start_action (GxdDevice *self, GError **error)
@@ -490,8 +490,8 @@ static void
 set_enroll_stages (GxdDevice *self, int stages)
 {
   self->enroll_stages = stages;
-  /* +1: il tocco di controllo duplicati, come fprintd con i dispositivi
-   * che sanno identificare */
+  /* +1: the duplicate-check touch, as fprintd does with devices that can
+   * identify */
   fprint_dbus_device_set_num_enroll_stages (FPRINT_DBUS_DEVICE (self), stages + 1);
 }
 
@@ -509,7 +509,7 @@ op_reset (GxdDevice *self)
   fprint_dbus_device_set_finger_present (FPRINT_DBUS_DEVICE (self), FALSE);
 }
 
-/* L'operazione e' finita (scansione ferma, nessun confronto in volo). */
+/* The operation is over (scan stopped, no match in flight). */
 static void
 maybe_completed (GxdDevice *self)
 {
@@ -521,7 +521,7 @@ maybe_completed (GxdDevice *self)
 
   if (self->cancelled)
     {
-      /* Come libfprint/fprintd su G_IO_ERROR_CANCELLED */
+      /* Like libfprint/fprintd on G_IO_ERROR_CANCELLED */
       if (action == ACTION_ENROLL)
         report_enroll (self, "enroll-failed", TRUE);
       else
@@ -532,7 +532,7 @@ maybe_completed (GxdDevice *self)
   session = session_get (self);
   if (self->cancel_invocation)
     {
-      /* complete_* consuma il riferimento della chiamata, l'autoptr il nostro */
+      /* complete_* consumes the invocation's reference, the autoptr ours */
       g_autoptr(GDBusMethodInvocation) stop = g_steal_pointer (&self->cancel_invocation);
 
       if (action == ACTION_ENROLL)
@@ -545,7 +545,7 @@ maybe_completed (GxdDevice *self)
     }
   else if (self->pending || (session && session->vanished))
     {
-      /* Release in attesa o client sparito: si chiude */
+      /* Release waiting or client gone: close */
       self->action = ACTION_NONE;
       if (session)
         session->verify_status_reported = FALSE;
@@ -568,7 +568,7 @@ scan_stopped_cb (GObject *source, GAsyncResult *res, gpointer data)
   g_object_unref (self);
 }
 
-/* Esito deciso (o annullamento): si ferma la scansione. */
+/* Outcome decided (or cancellation): stop the scan. */
 static void
 op_finish (GxdDevice *self, gboolean cancelled)
 {
@@ -599,13 +599,13 @@ op_start (GxdDevice *self, Action action)
   gxd_sensor_scan_start (self->sensor);
 }
 
-/* ---- confronto in un thread ---- */
+/* ---- matching in a thread ---- */
 
 typedef struct {
   GPtrArray        *gallery;      /* GxdTemplate */
   struct gx_featset probe;
   gboolean          learn;
-  int               matched;      /* indice in gallery, -1 nessuno */
+  int               matched;      /* index in gallery, -1 none */
   GxdMatch          m;
 } MatchJob;
 
@@ -712,7 +712,7 @@ match_done (GObject *source, GAsyncResult *res, gpointer data)
       g_assert_not_reached ();
     }
 
-  /* tocchi arrivati durante il confronto */
+  /* touches that arrived during the match */
   while (self->running && !self->finishing && !self->matching &&
          !g_queue_is_empty (&self->backlog))
     {
@@ -722,7 +722,7 @@ match_done (GObject *source, GAsyncResult *res, gpointer data)
     }
 }
 
-/* ---- registrazione ---- */
+/* ---- enrollment ---- */
 
 static gboolean
 enroll_same_place (GxdDevice *self, const GxdScan *scan)
@@ -786,10 +786,10 @@ enroll_frame (GxdDevice *self, GxdScan *scan)
 {
   int accepted = self->enroll_scans->len;
 
-  /* Posizioni diverse: un tocco uguale a uno gia' preso non aggiunge
-   * copertura. Se l'utente non trova piu' posizioni nuove (DUP_STOP tocchi
-   * ripetuti di fila, dopo almeno MIN_STAGES) la registrazione si chiude con
-   * questo tocco, abbassando il numero di stadi. */
+  /* Different positions: a touch equal to one already taken adds no
+   * coverage. If the user runs out of new positions (DUP_STOP repeated
+   * touches in a row, after at least MIN_STAGES) enrollment ends with this
+   * touch, lowering the number of stages. */
   if (!self->converged && accepted > 0 && enroll_same_place (self, scan))
     {
       self->dup_streak++;
@@ -826,7 +826,7 @@ enroll_frame (GxdDevice *self, GxdScan *scan)
     report_enroll (self, "enroll-stage-passed", FALSE);
 }
 
-/* ---- eventi del sensore ---- */
+/* ---- sensor events ---- */
 
 static void
 process_scan (GxdDevice *self, GxdScan *scan)
@@ -907,8 +907,8 @@ static void
 close_done (GObject *source, GAsyncResult *res, gpointer data)
 {
   GxdDevice *self = data;
-  /* pending tiene un riferimento in piu': lo rilascia l'autoptr, quello
-   * della chiamata lo consuma la risposta */
+  /* pending holds an extra reference: the autoptr releases it, the reply
+   * consumes the invocation's own */
   g_autoptr(GDBusMethodInvocation) invocation = g_steal_pointer (&self->pending);
 
   gxd_sensor_close_finish (GXD_SENSOR (source), res);
@@ -920,8 +920,8 @@ close_done (GObject *source, GAsyncResult *res, gpointer data)
   g_object_unref (self);
 }
 
-/* Chiude il dispositivo e scioglie la sessione (Release o client sparito).
- * Da chiamare a operazione ferma. */
+/* Closes the device and ends the session (Release or client gone).
+ * To be called with no operation running. */
 static void
 close_session (GxdDevice *self)
 {
@@ -945,7 +945,7 @@ open_done (GObject *source, GAsyncResult *res, gpointer data)
 
   if (session && session->vanished)
     {
-      /* il client e' sparito durante l'apertura */
+      /* the client left while the device was opening */
       g_dbus_method_invocation_return_error_literal (invocation, GXD_ERROR,
                                                      GXD_ERROR_INTERNAL,
                                                      "Client disconnected during claim");
@@ -1015,14 +1015,14 @@ handle_release (FprintDBusDevice *dbus, GDBusMethodInvocation *invocation)
     {
       g_warning ("%s was in progress, stopping it",
                  self->action == ACTION_ENROLL ? "Enrollment" : "Verification");
-      op_finish (self, TRUE);           /* chiude a operazione ferma */
+      op_finish (self, TRUE);           /* close once the operation has stopped */
       return TRUE;
     }
   close_session (self);
   return TRUE;
 }
 
-/* ---- verifica ---- */
+/* ---- verification ---- */
 
 static gboolean
 handle_verify_start (FprintDBusDevice *dbus, GDBusMethodInvocation *invocation,
@@ -1099,8 +1099,8 @@ handle_verify_stop (FprintDBusDevice *dbus, GDBusMethodInvocation *invocation)
     }
   if (self->running)
     {
-      /* Con un esito gia' dato si aspetta la fine naturale (pochi ms),
-       * altrimenti si annulla. Si risponde a operazione ferma. */
+      /* With an outcome already given, wait for the natural end (a few ms),
+       * otherwise cancel. The reply is sent once the operation has stopped. */
       self->cancel_invocation = g_object_ref (invocation);
       op_finish (self, !self->finishing);
       return TRUE;
@@ -1113,7 +1113,7 @@ handle_verify_stop (FprintDBusDevice *dbus, GDBusMethodInvocation *invocation)
   return TRUE;
 }
 
-/* ---- registrazione ---- */
+/* ---- enrollment ---- */
 
 static gboolean
 user_has_finger (const char *username, int finger)
@@ -1189,7 +1189,7 @@ handle_enroll_start (FprintDBusDevice *dbus, GDBusMethodInvocation *invocation,
       return TRUE;
     }
   session = session_get (self);
-  /* Riregistrare un dito sostituisce l'impronta precedente. */
+  /* Enrolling a finger again replaces the previous fingerprint. */
   if (user_has_finger (session->username, finger) &&
       !delete_fingers (session->username, finger, &error))
     {
@@ -1204,7 +1204,7 @@ handle_enroll_start (FprintDBusDevice *dbus, GDBusMethodInvocation *invocation,
   self->dup_streak = 0;
   self->converged = FALSE;
   set_enroll_stages (self, ENROLL_MAX_STAGES);
-  /* Nessun dito puo' essere registrato due volte, nemmeno da utenti diversi. */
+  /* No finger may be enrolled twice, not even by different users. */
   self->gallery = gxd_storage_load_all ();
   op_start (self, ACTION_ENROLL);
 
@@ -1235,7 +1235,7 @@ handle_enroll_stop (FprintDBusDevice *dbus, GDBusMethodInvocation *invocation)
   return TRUE;
 }
 
-/* ---- elenco e cancellazione ---- */
+/* ---- listing and deletion ---- */
 
 static gboolean
 handle_list_enrolled_fingers (FprintDBusDevice *dbus, GDBusMethodInvocation *invocation,

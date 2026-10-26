@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Enroll/verify con template multi-frame per il Goodix 27c6:5125.
+"""Enroll/verify with a multi-frame template for the Goodix 27c6:5125.
 
-Come Windows Hello: l'enroll combina molti tocchi (zone diverse del dito) in un template;
-la verifica confronta la piccola zona letta contro OGNI frame del template e prende il migliore.
+Like Windows Hello: enrollment combines many touches (different areas of the finger) into a
+template; verification compares the small area read against EVERY template frame and takes the best.
 
   match_template.py enroll <template.npz> <clear_plain.bin> <frame_plain.bin> [frame2 ...]
   match_template.py verify <template.npz> <clear_plain.bin> <probe_plain.bin>
@@ -18,7 +18,7 @@ from preprocessor import frame_from_plaintext, preprocess
 
 _sift = cv2.SIFT_create(nfeatures=250, contrastThreshold=0.02, edgeThreshold=12)
 _bf = cv2.BFMatcher(cv2.NORM_L2)
-MATCH_THRESHOLD = 15   # inlier geometrici minimi; separa genuino-sovrapposto (35-97) da rumore (<=8)
+MATCH_THRESHOLD = 15   # minimum geometric inliers; separates overlapping genuine (35-97) from noise (<=8)
 
 
 def _features(plain_path, clear_path):
@@ -31,7 +31,7 @@ def _features(plain_path, clear_path):
 
 
 def _match_one(pa, da, pb, db):
-    """Inlier geometrici (affine RANSAC) tra due frame."""
+    """Geometric inliers (affine RANSAC) between two frames."""
     if len(da) < 2 or len(db) < 2:
         return 0
     good = [m for m, n in _bf.knnMatch(da, db, k=2) if m.distance < 0.75 * n.distance]
@@ -50,10 +50,10 @@ def enroll(template_path, clear_path, frame_paths):
         pts, desc = _features(fp, clear_path)
         data[f"pts_{i}"] = pts
         data[f"desc_{i}"] = desc
-        print(f"frame {i}: {len(pts)} keypoint da {os.path.basename(fp)}")
+        print(f"frame {i}: {len(pts)} keypoints from {os.path.basename(fp)}")
     data["count"] = np.array([len(frame_paths)])
     np.savez(template_path, **data)
-    print(f"template salvato: {template_path} ({len(frame_paths)} frame)")
+    print(f"template saved: {template_path} ({len(frame_paths)} frames)")
 
 
 def verify(template_path, clear_path, probe_path):
@@ -62,9 +62,9 @@ def verify(template_path, clear_path, probe_path):
     pp, pd = _features(probe_path, clear_path)
     scores = [_match_one(t[f"pts_{i}"], t[f"desc_{i}"], pp, pd) for i in range(n)]
     best = max(scores) if scores else 0
-    print(f"probe {os.path.basename(probe_path)}: inlier per frame = {scores}")
-    print(f"miglior match = {best} (soglia {MATCH_THRESHOLD}) -> "
-          f"{'ACCETTATO (stesso dito)' if best >= MATCH_THRESHOLD else 'RIFIUTATO'}")
+    print(f"probe {os.path.basename(probe_path)}: inliers per frame = {scores}")
+    print(f"best match = {best} (threshold {MATCH_THRESHOLD}) -> "
+          f"{'ACCEPTED (same finger)' if best >= MATCH_THRESHOLD else 'REJECTED'}")
     return best
 
 

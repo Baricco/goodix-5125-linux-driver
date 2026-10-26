@@ -1,12 +1,12 @@
-// Banco di prova offline del matcher SIGFM (lo stesso di libfprint goodixgf).
-// Carica immagini PGM dumpate dal driver (GOODIX_DUMP_IMGPROC, stage enh8/final8),
-// calcola per ogni frame di test lo score MAX contro il template (= cio' che fa
-// fpi_print_sigfm_match: match se un frame supera la soglia), e fa lo sweep della
-// soglia stampando FRR (genuini rifiutati) e FAR (impostori accettati).
+// Offline test bench of the SIGFM matcher (the same as libfprint goodixgf).
+// Loads PGM images dumped by the driver (GOODIX_DUMP_IMGPROC, stage enh8/final8),
+// computes for every test frame the MAX score against the template (= what
+// fpi_print_sigfm_match does: a match if one frame exceeds the threshold), and
+// sweeps the threshold printing FRR (genuine rejected) and FAR (impostors accepted).
 //
-// Build (vedi build.sh):
+// Build (see build.sh):
 //   g++ -O2 sigfm_test.cpp -o sigfm_test -I<sigfm_dir> <libsigfm.a> $(pkg-config ... opencv)
-// Uso:
+// Usage:
 //   ./sigfm_test <template_dir> <genuine_dir> <impostor_dir>
 #include <algorithm>
 #include <cstdio>
@@ -18,7 +18,7 @@
 
 #include "sigfm.h"
 
-// Carica un PGM binario P5 a 8 bit.
+// Loads an 8-bit binary P5 PGM.
 static SigfmPix *load_pgm(const std::string &path, int *w, int *h) {
     FILE *f = fopen(path.c_str(), "rb");
     if (!f) return nullptr;
@@ -29,7 +29,7 @@ static SigfmPix *load_pgm(const std::string &path, int *w, int *h) {
         fclose(f);
         return nullptr;
     }
-    fgetc(f); // singolo whitespace dopo maxval
+    fgetc(f); // single whitespace after maxval
     int n = (*w) * (*h);
     SigfmPix *px = (SigfmPix *)malloc(n);
     if (!px || fread(px, 1, n, f) != (size_t)n) {
@@ -58,7 +58,7 @@ static std::vector<std::string> list_stage(const char *dir, const char *stage) {
 }
 
 static std::vector<SigfmImgInfo *> load_dir(const char *dir) {
-    auto files = list_stage(dir, "-enh8");   // input reale del sigfm (enhance on)
+    auto files = list_stage(dir, "-enh8");   // the real input of sigfm (enhance on)
     if (files.empty()) files = list_stage(dir, "-final8");
     std::vector<SigfmImgInfo *> infos;
     for (auto &p : files) {
@@ -74,7 +74,7 @@ static std::vector<SigfmImgInfo *> load_dir(const char *dir) {
 
 int main(int argc, char **argv) {
     if (argc < 4) {
-        fprintf(stderr, "uso: %s <template_dir> <genuine_dir> <impostor_dir>\n", argv[0]);
+        fprintf(stderr, "usage: %s <template_dir> <genuine_dir> <impostor_dir>\n", argv[0]);
         return 1;
     }
     auto tmpl = load_dir(argv[1]);
@@ -83,7 +83,7 @@ int main(int argc, char **argv) {
     fprintf(stderr, "template=%zu  genuine=%zu  impostor=%zu frame\n",
             tmpl.size(), gen.size(), imp.size());
     if (tmpl.empty() || (gen.empty() && imp.empty())) {
-        fprintf(stderr, "dati insufficienti\n");
+        fprintf(stderr, "not enough data\n");
         return 1;
     }
 
@@ -106,7 +106,7 @@ int main(int argc, char **argv) {
     for (int s : gs) printf("%d ", s);
     printf("\nIMPOSTOR max-score: ");
     for (int s : is) printf("%d ", s);
-    printf("\n\nsoglia  FRR (genuini rifiutati)   FAR (impostori accettati)\n");
+    printf("\n\nthresh  FRR (genuine rejected)     FAR (impostors accepted)\n");
 
     int imax = is.empty() ? 0 : is.back();
     int hi = std::max(imax + 25, 120);
@@ -123,10 +123,10 @@ int main(int argc, char **argv) {
                far0 ? "   <= FAR 0" : "");
     }
     if (best >= 0)
-        printf("\nSoglia minima con FAR=0: %d  (FRR li': %.0f%%)\n", best,
+        printf("\nLowest threshold with FAR=0: %d  (FRR there: %.0f%%)\n", best,
                [&] { int r = 0; for (int s : gs) if (s < best) r++;
                      return gs.empty() ? 0.0 : 100.0 * r / gs.size(); }());
     else
-        printf("\nNessuna soglia azzera il FAR: genuino e impostore si sovrappongono.\n");
+        printf("\nNo threshold brings FAR to 0: genuine and impostor overlap.\n");
     return 0;
 }

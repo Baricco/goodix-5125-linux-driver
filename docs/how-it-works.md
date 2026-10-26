@@ -1,135 +1,142 @@
-# Come funziona
+# How it works
 
-## La catena
+## The chain
 
 ```
-sensore Goodix (nel tasto di accensione)
-   │  USB CDC, canale TLS-PSK (AES-128-GCM, OpenSSL) con chiave scritta da noi
+Goodix sensor (in the power button)
+   │  USB CDC, TLS-PSK channel (AES-128-GCM, OpenSSL) with a key we hold
    ▼
-goodixfpd  (al posto del demone di fprintd, stessa interfaccia D-Bus)
-   │  finger-detect (FDT) -> immagine 80×64 a 12 bit
-   │  pipeline immagine "ridge" -> immagine 8 bit delle creste
-   │  SIFT + voto geometrico SIGFM (in C)    impronta = 15-30 frame del dito
+goodixfpd  (instead of fprintd's daemon, same D-Bus interface)
+   │  finger detect (FDT) -> 80×64 image, 12 bit
+   │  "ridge" image pipeline -> 8-bit ridge image
+   │  SIFT + SIGFM geometric voting (in C)    fingerprint = 15-30 frames of the finger
    ▼
 net.reactivated.Fprint  ──  pam_fprintd / fprintd-* / GNOME / GUI
-                            sudo, greeter, blocco schermo
+                            sudo, greeter, lock screen
 ```
 
-Il sensore è minuscolo: un frame copre circa **4×3 mm** di dito a 500 DPI. Una
-singola immagine contiene troppo poco per i matcher a minuzie classici, perciò
-si usa l'algoritmo **SIGFM**: estrae punti SIFT e conta le coppie di
-corrispondenze la cui geometria (distanze e angoli) è coerente con una
-rototraslazione del dito. L'**impronta** salvata è un insieme di 15-30 frame
-presi in punti leggermente diversi della zona che usi. Un tocco viene accettato
-se combacia con almeno uno di essi oltre la soglia (20).
+The sensor is tiny: one frame covers about **4×3 mm** of finger at 500 DPI. A
+single image holds too little for classic minutiae matchers, so the
+**SIGFM** algorithm is used: it extracts SIFT keypoints and counts the pairs
+of correspondences whose geometry (distances and angles) is consistent with a
+rotation plus translation of the finger. The saved **fingerprint** is a set of
+15-30 frames taken at slightly different spots of the area you use. A touch is
+accepted if it matches at least one of them above the threshold (20).
 
-## Perché un servizio a parte e non un driver dentro libfprint
+## Why a separate service and not a driver inside libfprint
 
-La prima versione era un driver dentro libfprint, con il matcher SIGFM preso
-da una merge request non ancora accettata (!530). Funzionava, ma voleva dire
-**modificare una libreria di sistema**: a ogni nuova libfprint bisognava
-riapplicare una ventina di patch, con il rischio che smettessero di applicarsi.
+The first version was a driver inside libfprint, with the SIGFM matcher taken
+from a merge request that has not been accepted yet (!530). It worked, but it
+meant **modifying a system library**: every new libfprint required reapplying
+about twenty patches, with the risk that they would stop applying.
 
-Il codice del sensore però non dipendeva da libfprint. Così ora vive in un
-servizio, `goodixfpd`, che implementa lo stesso contratto di fprintd: stessi
-metodi, segnali, errori e controlli polkit (`net.reactivated.fprint.device.*`).
-Lo stesso fprintd della distribuzione resta installato: fornisce `pam_fprintd`,
-i comandi `fprintd-*`, la descrizione dell'interfaccia e le regole polkit. Un
-drop-in di `fprintd.service` avvia `goodixfpd` al posto del suo demone. Quando
-il lettore Goodix manca, `goodixfpd` avvia il demone originale.
+The sensor code, however, did not depend on libfprint. So it now lives in a
+service, `goodixfpd`, that implements the same contract as fprintd: the same
+methods, signals, errors and polkit checks
+(`net.reactivated.fprint.device.*`). The distribution's fprintd stays
+installed: it provides `pam_fprintd`, the `fprintd-*` commands, the interface
+description and the polkit rules. A drop-in for `fprintd.service` starts
+`goodixfpd` instead of its daemon. When the Goodix reader is missing,
+`goodixfpd` starts the original daemon.
 
-Risultato: **nessuna libreria modificata**. Gli aggiornamenti di libfprint e
-fprintd arrivano come per tutti, e il progetto non dipende dall'accettazione di
-patch altrui. SIFT e il voto geometrico sono riscritti in C (niente OpenCV), il
-canale TLS usa OpenSSL (niente mbedtls).
+Result: **no modified library**. libfprint and fprintd updates arrive as for
+everybody else, and the project does not depend on other people accepting
+patches. SIFT and the geometric voting are rewritten in C (no OpenCV), the TLS
+channel uses OpenSSL (no mbedtls).
 
-## Il problema che c'era: il fantasma fisso del sensore
+## The problem we had: the sensor's fixed pattern
 
-Il primo dataset di taratura mostrava impostori con punteggi da **2 000 a 13 000**
-contro una soglia di 20. Cioè dita sbagliate accettate.
+The first calibration data set showed impostors scoring **2,000 to 13,000**
+against a threshold of 20. That is, wrong fingers being accepted.
 
-La causa: ogni frame contiene un **disegno fisso legato ai pixel del sensore**
-(strisce verticali e macchie), il residuo di guadagno e baseline del sensore.
-Nei tocchi deboli domina l'immagine. Siccome sta sempre agli stessi pixel, i
-punti SIFT del fantasma di un frame combaciano perfettamente con quelli di
-qualsiasi altro frame, di qualsiasi dito. Il 93% di queste false corrispondenze
-ha spostamento ≤ 1 pixel.
+The cause: every frame contains a **fixed pattern tied to the sensor pixels**
+(vertical stripes and blobs), the residue of the sensor's gain and baseline. In
+light touches it dominates the image. Since it always sits on the same pixels,
+the SIFT keypoints of the pattern in one frame match those of any other frame,
+of any finger, perfectly. 93% of these false correspondences have a
+displacement of ≤ 1 pixel.
 
-## Le difese
+## The defences
 
-1. **Matcher: niente corrispondenze ferme.** Il confronto scarta le coppie di
-   punti distanti ≤ 2 pixel. Un dito vero non si riappoggia mai al pixel
-   esatto; il fantasma sì. Questa difesa da sola porta gli impostori a 0 su
-   tutti i dataset. Corretto anche un bug di SIGFM upstream: l'ordinamento
-   confrontava solo la coordinata y e scartava corrispondenze valide.
-2. **Immagine delle creste.** Al posto di stretch + nitidezza, che amplificava
-   il fantasma, la pipeline fa: `raw − baseline` in virgola mobile, rimozione
-   per regressione della componente con la forma della baseline (guadagno),
-   filtro passa-banda DoG sulla frequenza delle creste (σ 1/4 px), stretch e
-   CLAHE.
-3. **Baseline fresca.** Prima di armare il finger-detect il servizio scatta un
-   frame senza dito, che diventa la baseline del tocco successivo. Viene
-   scartato se sembra contenere un dito; in quel caso si usa l'ultima baseline
-   valida.
-4. **Controllo qualità.** I frame con contrasto delle creste troppo basso
-   (`ridge` < 10; un tocco pieno è 100–200) diventano "riprova" invece di
-   essere registrati o confrontati.
+1. **Matcher: no still correspondences.** Matching discards pairs of points
+   that are ≤ 2 pixels apart. A real finger never lands again on the exact
+   same pixel; the fixed pattern does. This defence alone brings impostors to
+   0 on every data set. An upstream SIGFM bug was fixed too: the ordering
+   compared only the y coordinate and dropped valid correspondences.
+2. **Ridge image.** Instead of stretch + sharpening, which amplified the fixed
+   pattern, the pipeline does: `raw − baseline` in floating point, removal by
+   regression of the component shaped like the baseline (gain), a DoG
+   band-pass filter on the ridge frequency (σ 1/4 px), stretch and CLAHE.
+3. **Fresh baseline.** Before arming finger detection the service takes a
+   frame with no finger, which becomes the baseline of the next touch. It is
+   discarded if it looks like it contains a finger; in that case the last
+   valid baseline is used.
+4. **Quality check.** Frames whose ridge contrast is too low (`ridge` < 10; a
+   full touch is 100–200) become "try again" instead of being enrolled or
+   matched.
 
-## Risultati misurati (sensore reale, 24/10/2026)
+With the ridge image and the quality check, the impostors of the second data
+set already score 0 even with the uncorrected SIGFM; the matcher fix is the
+second line of defence and roughly doubles the scores of the right finger.
 
-Misurati dal vivo con la versione precedente (driver in libfprint, SIGFM su
-OpenCV). Template di 31 tocchi, poi 25 verifiche col dito registrato e 25 con
-altre quattro dita:
+## Measured results (real sensor, 24/10/2026)
 
-| | Esito |
+Measured live with the previous version (driver inside libfprint, SIGFM on
+OpenCV). A 31-touch template, then 25 verifications with the enrolled finger
+and 25 with four other fingers:
+
+| | Outcome |
 |---|---|
-| Dito registrato | **22/25 accettati** (FRR 12%) |
-| Altre dita | **0/25 accettate** (FAR 0) |
-| Punteggio impostori | **0** contro tutti i 30 frame del template, in tutti i tentativi |
-| Impronte specchiate (dita "inesistenti", stress test) | 0 |
-| Frame di 2–3 giorni prima, altro driver | dito registrato riconosciuto, altre dita 0 |
+| Enrolled finger | **22/25 accepted** (FRR 12%) |
+| Other fingers | **0/25 accepted** (FAR 0) |
+| Impostor score | **0** against all 30 template frames, in every attempt |
+| Mirrored fingerprints ("non-existent" fingers, stress test) | 0 |
+| Frames from 2–3 days earlier, other driver | enrolled finger recognized, other fingers 0 |
 
-I 3 rifiuti sono tocchi caduti fuori dalle zone registrate (punteggio 0 pieno,
-non casi al limite). Al login `max-tries=10` li assorbe: si ritocca.
+The 3 rejections are touches that fell outside the enrolled areas (a flat
+score of 0, not borderline cases). At login `max-tries=10` absorbs them: you
+touch again.
 
-`goodixfpd` è stato verificato offline sugli stessi frame grezzi di quella
-sessione. La sua pipeline immagine riproduce **bit per bit** le 81 immagini di
-produzione, e il confronto in C dà **le stesse decisioni**: 22/25 genuini,
-0/25 impostori. Su 1550 coppie frame-frame una sola cambia esito, e nessuna
-cambia l'esito di una verifica.
+`goodixfpd` was verified offline on the same raw frames of that session. Its
+image pipeline reproduces the 81 production images **bit for bit**, and the C
+matcher gives **the same decisions**: 22/25 genuine, 0/25 impostors. Out of
+1550 frame-to-frame pairs only one changes outcome, and none changes the
+outcome of a verification.
 
-## L'impronta che migliora con l'uso
+## A fingerprint that improves with use
 
-Il driver Windows aggiorna il template a ogni riconoscimento riuscito. Lo fa
-anche `goodixfpd`: un tocco riconosciuto con margine (punteggio ≥ 40, il doppio
-della soglia), che però solo pochi frame riconoscono (al più 3, cioè un tocco
-al bordo della zona coperta), viene aggiunto all'impronta. Così un tocco
-appena più in là la volta dopo trova qualcosa con cui combaciare, e la
-copertura cresce con l'uso.
+The Windows driver updates the template on every successful recognition.
+`goodixfpd` does the same: a touch recognized with margin (score ≥ 40, twice
+the threshold) that only a few frames recognize (at most 3, i.e. a touch at
+the edge of the covered area) is added to the fingerprint. That way a touch a
+little further out finds something to match next time, and coverage grows with
+use.
 
-Limiti scelti per sicurezza:
-- i frame della registrazione **non vengono mai sostituiti**, quindi l'impronta
-  non può "scivolare" lontano dal dito registrato;
-- i frame imparati sono al massimo 30 e si rinnovano dal più vecchio;
-- si impara solo da verifiche, mai dal tocco di controllo dei duplicati, e
-  solo con un margine doppio rispetto alla soglia;
-- `GOODIX_LEARN=0` lo disattiva.
+Limits chosen for safety:
+- enrollment frames **are never replaced**, so the fingerprint cannot "drift"
+  away from the enrolled finger;
+- learned frames are at most 30 and are renewed starting from the oldest;
+- learning happens only from verifications, never from the duplicate check
+  touch, and only with twice the threshold as margin;
+- `GOODIX_LEARN=0` disables it.
 
-Sui dati della sessione l'apprendimento non cambia nessun esito: gli impostori
-restano 0/25 anche contro l'impronta arricchita.
+On the session data learning changes no outcome: impostors stay at 0/25 even
+against the enriched fingerprint.
 
-## Riproducibilità
+## Reproducibility
 
-Ogni modifica a matcher o pipeline si misura **prima** di toccare il sensore.
-I test di `goodixfpd/` (`meson test`) controllano:
+Every change to the matcher or the pipeline is measured **before** touching the
+sensor. The tests of `goodixfpd/` (`meson test`) check:
 
-- `tls`: il canale TLS-PSK contro un client che fa la parte del sensore
-  (handshake, dati, riconnessione, chiave sbagliata rifiutata);
-- `template`: formato su disco, archivio, regole d'apprendimento. Con
-  `-Ddataset=<cartella>` di catture reali anche pipeline bit per bit, FRR e FAR;
-- `dbus`: 16 scenari contro i client veri. Bus privato, polkit finto, sensore
-  simulato; `fprintd-list`, `fprintd-verify` e il vero `pam_fprintd.so` (via
-  `pam_start_confdir`, senza toccare `/etc/pam.d`).
+- `tls`: the TLS-PSK channel against a client playing the sensor's part
+  (handshake, data, reconnection, wrong key rejected);
+- `template`: on-disk format, storage, learning rules. With
+  `-Ddataset=<folder>` of real captures, also the bit-exact pipeline, FRR and
+  FAR;
+- `dbus`: 16 scenarios against the real clients. Private bus, fake polkit,
+  simulated sensor; `fprintd-list`, `fprintd-verify` and the real
+  `pam_fprintd.so` (through `pam_start_confdir`, without touching
+  `/etc/pam.d`).
 
-[`tools/fp_tune/`](../tools/fp_tune) resta il banco usato per la taratura
-originale (sessione al sensore con dump grezzi, analisi con lo SIGFM OpenCV).
+[`tools/fp_tune/`](../tools/fp_tune) remains the bench used for the original
+calibration (sensor session with raw dumps, analysis with the OpenCV SIGFM).

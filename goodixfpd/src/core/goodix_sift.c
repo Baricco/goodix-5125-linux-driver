@@ -1,13 +1,18 @@
-/* goodix_sift.c - 无 OpenCV 依赖的 SIFT（Lowe 2004），逐步对齐 cv::SIFT
+/* goodix_sift.c - SIFT (Lowe 2004) without OpenCV, aligned step by step with
+ * cv::SIFT
  *
- * 流程与 OpenCV（features/sift.simd.hpp + sift.dispatch.cpp）一致：
- *   1. 原图转浮点，双线性放大 2x，高斯模糊到 σ=1.6（首组 octave -1）；
- *   2. 高斯金字塔（每组 nOctaveLayers+3 层）与 DoG 金字塔；
- *   3. 26 邻域极值 -> 三维二次插值精化 -> 对比度/边缘响应筛选；
- *   4. 36 bin 方向直方图，主峰 80% 以上的每个峰各成一个关键点；
- *   5. 4x4x8 描述子（三线性插值、0.2 截断、×512 量化到 0..255）。
- * 参数为 OpenCV 默认值；高斯核长 round(8σ+1)|1、边界 reflect-101，
- * 与 GaussianBlur 对 CV_32F 的行为一致。
+ * Same flow as OpenCV (features/sift.simd.hpp + sift.dispatch.cpp):
+ *   1. convert the image to float, bilinear 2x upscale, Gaussian blur to
+ *      σ=1.6 (first octave -1);
+ *   2. Gaussian pyramid (nOctaveLayers+3 layers per octave) and DoG pyramid;
+ *   3. 26-neighbour extrema -> 3D quadratic interpolation refinement ->
+ *      contrast/edge response filtering;
+ *   4. 36-bin orientation histogram, every peak above 80% of the main peak
+ *      becomes a keypoint;
+ *   5. 4x4x8 descriptor (trilinear interpolation, 0.2 clipping, x512
+ *      quantization to 0..255).
+ * Parameters are OpenCV's defaults; Gaussian kernel length round(8σ+1)|1,
+ * reflect-101 border, consistent with GaussianBlur on CV_32F.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -28,8 +33,8 @@
 #define SIFT_ORI_SIG_FCTR    1.5f
 #define SIFT_ORI_RADIUS      (3 * SIFT_ORI_SIG_FCTR)
 #define SIFT_ORI_PEAK        0.8f
-#define SIFT_D               4          /* 描述子空间网格 4x4 */
-#define SIFT_N               8          /* 每格方向 bin */
+#define SIFT_D               4          /* descriptor spatial grid 4x4 */
+#define SIFT_N               8          /* orientation bins per cell */
 #define SIFT_DESCR_SCL       3.0f
 #define SIFT_DESCR_MAG_THR   0.2f
 #define SIFT_INT_DESCR_FCTR  512.0f
@@ -42,15 +47,15 @@ struct fimg {
 
 #define PX(im, x, y) ((im)->p[(y) * (im)->w + (x)])
 
-/* 候选关键点（金字塔内部坐标） */
+/* candidate keypoint (pyramid-internal coordinates) */
 struct kp {
-    int o, layer;           /* 金字塔组（0 = 放大 2x 的组）与层 */
-    int ir, ic;             /* 精化后的整数位置（方向直方图中心） */
-    float x, y;             /* 组内坐标（含亚像素偏移） */
-    float scl;              /* 组内尺度 σ */
-    float angle;            /* OpenCV 约定：360 - 主方向 */
-    float ox, oy;           /* 原图坐标 */
-    float size;             /* 原图尺度（去重排序用） */
+    int o, layer;           /* pyramid octave (0 = the 2x-upscaled octave) and layer */
+    int ir, ic;             /* refined integer position (centre of the orientation histogram) */
+    float x, y;             /* coordinates within the octave (with sub-pixel offset) */
+    float scl;              /* scale σ within the octave */
+    float angle;            /* OpenCV convention: 360 - main orientation */
+    float ox, oy;           /* original image coordinates */
+    float size;             /* original image scale (for the dedup sort) */
 };
 
 static int fimg_alloc(struct fimg *im, int w, int h)
@@ -63,7 +68,7 @@ static int fimg_alloc(struct fimg *im, int w, int h)
 
 static inline int cv_round(double v)
 {
-    return (int)lrint(v);           /* 同 cvRound：就近、半数取偶 */
+    return (int)lrint(v);           /* as cvRound: round to nearest, ties to even */
 }
 
 static inline int reflect101(int i, int n)
@@ -75,7 +80,7 @@ static inline int reflect101(int i, int n)
     return i;
 }
 
-/* 可分离高斯，核长 cvRound(8σ+1)|1，边界 reflect-101 */
+/* separable Gaussian, kernel length cvRound(8σ+1)|1, reflect-101 border */
 static int gauss(const struct fimg *src, struct fimg *dst, float sigma)
 {
     int ks = cv_round(sigma * 8.0f + 1.0f) | 1;
@@ -116,7 +121,8 @@ static int gauss(const struct fimg *src, struct fimg *dst, float sigma)
     return 0;
 }
 
-/* 双线性放大 2x（像素中心对齐，边界复制，同 resize INTER_LINEAR） */
+/* bilinear 2x upscale (pixel-centre aligned, replicated border, as resize
+ * INTER_LINEAR) */
 static void upscale2x(const uint8_t *src, int w, int h, struct fimg *dst)
 {
     for (int y = 0; y < 2 * h; y++) {
@@ -140,7 +146,8 @@ static void upscale2x(const uint8_t *src, int w, int h, struct fimg *dst)
     }
 }
 
-/* 最近邻缩小到一半（同 resize INTER_NEAREST, dsize = src/2） */
+/* nearest-neighbour downscale by half (as resize INTER_NEAREST,
+ * dsize = src/2) */
 static void downsample(const struct fimg *src, struct fimg *dst)
 {
     double fx = (double)src->w / dst->w, fy = (double)src->h / dst->h;
@@ -155,7 +162,8 @@ static void downsample(const struct fimg *src, struct fimg *dst)
     }
 }
 
-/* 3x3 线性方程组（部分主元高斯消元）；奇异时 x=0，同 Matx::solve LU 失败 */
+/* 3x3 linear system (Gaussian elimination with partial pivoting); x=0 when
+ * singular, as when Matx::solve LU fails */
 static void solve3(const float A_in[9], const float b_in[3], float x[3])
 {
     double A[3][4];
@@ -193,8 +201,9 @@ static void solve3(const float A_in[9], const float b_in[3], float x[3])
     }
 }
 
-/* 极值点三维插值精化 + 对比度/边缘筛选（adjustLocalExtrema）。
- * dog 为本组的 DoG 层数组。成功返回 1 并填写 kp。 */
+/* 3D interpolation refinement of an extremum + contrast/edge filtering
+ * (adjustLocalExtrema). dog is this octave's array of DoG layers. Returns 1
+ * on success and fills kp. */
 static int adjust_extremum(struct fimg *dog, int o, int layer, int r, int c,
                            struct kp *out)
 {
@@ -276,14 +285,14 @@ static int adjust_extremum(struct fimg *dog, int o, int layer, int r, int c,
     out->x = c + xc;
     out->y = r + xr;
     out->scl = SIFT_SIGMA * powf(2.0f, (layer + xi) / SIFT_LAYERS);
-    /* 放大组 octave -1：原图坐标 = 组内坐标 * 2^o / 2 */
+    /* upscaled octave -1: original coordinate = octave coordinate * 2^o / 2 */
     out->ox = out->x * (float)(1 << o) * 0.5f;
     out->oy = out->y * (float)(1 << o) * 0.5f;
     out->size = out->scl * (float)(1 << o) * 2.0f * 0.5f;
     return 1;
 }
 
-/* 方向直方图（calcOrientationHist），返回最大值 */
+/* orientation histogram (calcOrientationHist), returns the maximum */
 static float orientation_hist(const struct fimg *img, int px, int py,
                               int radius, float sigma, float hist[SIFT_ORI_BINS])
 {
@@ -333,7 +342,8 @@ static float orientation_hist(const struct fimg *img, int px, int py,
     return maxval;
 }
 
-/* 描述子（calcSIFTDescriptor）：ori 为主方向（度），scl 为组内尺度 */
+/* descriptor (calcSIFTDescriptor): ori is the main orientation (degrees),
+ * scl the scale within the octave */
 static void descriptor(const struct fimg *img, float fx, float fy, float ori,
                        float scl, uint8_t out[GX_SIFT_DESC_LEN])
 {
@@ -359,7 +369,7 @@ static void descriptor(const struct fimg *img, float fx, float fy, float ori,
         for (int j = -radius; j <= radius; j++) {
             float c_rot = j * cos_t - i * sin_t;
             float r_rot = j * sin_t + i * cos_t;
-            float rbin = r_rot + (float)(d / 2) - 0.5f;   /* d/2 整除，同 OpenCV */
+            float rbin = r_rot + (float)(d / 2) - 0.5f;   /* integer division d/2, as in OpenCV */
             float cbin = c_rot + (float)(d / 2) - 0.5f;
             int r = py + i, c = px + j;
             float dx, dy, gori, mag, obin;
@@ -433,7 +443,8 @@ static void descriptor(const struct fimg *img, float fx, float fy, float ori,
     }
 }
 
-/* KeyPointsFilter::removeDuplicatedSorted 的排序键：x, y 升序，size 降序，angle 升序 */
+/* sort key of KeyPointsFilter::removeDuplicatedSorted: x, y ascending, size
+ * descending, angle ascending */
 static int kp_cmp(const void *a, const void *b)
 {
     const struct kp *p = a, *q = b;
@@ -469,14 +480,15 @@ int gx_sift_extract(const uint8_t *img8, int w, int h, struct gx_featset *out)
     out->n = 0;
     out->f = NULL;
 
-    /* 组数：基于放大后的基图（同 OpenCV：log2(min) - 2 - firstOctave） */
+    /* number of octaves: based on the upscaled base image (as OpenCV:
+     * log2(min) - 2 - firstOctave) */
     noct = cv_round(log((double)(2 * (w < h ? w : h))) / log(2.0) - 2) + 1;
     gp = calloc((size_t)noct * NG, sizeof(*gp));
     dog = calloc((size_t)noct * ND, sizeof(*dog));
     if (!gp || !dog)
         goto out;
 
-    /* 各层增量 σ */
+    /* incremental σ of each layer */
     sig[0] = SIFT_SIGMA;
     for (int i = 1; i < NG; i++) {
         double k = pow(2.0, 1.0 / L);
@@ -484,7 +496,7 @@ int gx_sift_extract(const uint8_t *img8, int w, int h, struct gx_featset *out)
         sig[i] = (float)sqrt(total * total - prev * prev);
     }
 
-    /* 高斯金字塔 */
+    /* Gaussian pyramid */
     for (int o = 0; o < noct; o++)
         for (int i = 0; i < NG; i++) {
             struct fimg *dst = &gp[o * NG + i];
@@ -525,7 +537,7 @@ int gx_sift_extract(const uint8_t *img8, int w, int h, struct gx_featset *out)
                 d->p[k] = b->p[k] - a->p[k];
         }
 
-    /* 极值检测 + 方向 */
+    /* extremum detection + orientation */
     {
         const int threshold = (int)floor(0.5 * SIFT_CONTRAST / L * 255);
         for (int o = 0; o < noct; o++) {
@@ -587,7 +599,7 @@ int gx_sift_extract(const uint8_t *img8, int w, int h, struct gx_featset *out)
         }
     }
 
-    /* 去重（同 removeDuplicatedSorted） */
+    /* deduplication (as removeDuplicatedSorted) */
     if (nkp > 1) {
         size_t m = 1;
         qsort(kps, nkp, sizeof(*kps), kp_cmp);
@@ -599,7 +611,7 @@ int gx_sift_extract(const uint8_t *img8, int w, int h, struct gx_featset *out)
         nkp = m;
     }
 
-    /* 描述子 */
+    /* descriptors */
     out->f = calloc(nkp ? nkp : 1, sizeof(*out->f));
     if (!out->f)
         goto out;

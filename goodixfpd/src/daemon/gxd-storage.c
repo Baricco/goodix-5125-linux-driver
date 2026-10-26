@@ -1,8 +1,8 @@
-/* gxd-storage.c - impronte su disco.
+/* gxd-storage.c - fingerprints on disk.
  *
- * Una impronta per file, <state>/goodixfpd/<utente>/<nome-dito>, directory
- * 0700 e file 0600 (le impronte di libfprint stanno in <state>/<utente>/,
- * qui non si toccano). Scrittura atomica: file temporaneo + rename.
+ * One fingerprint per file, <state>/goodixfpd/<user>/<finger-name>, 0700
+ * directories and 0600 files (libfprint's prints live in <state>/<user>/ and
+ * are not touched here). Atomic writes: temporary file + rename.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -78,7 +78,7 @@ gxd_storage_load (const char *username, int finger, GError **error)
       g_prefix_error (error, "%s: ", path);
       return NULL;
     }
-  /* L'identita' viene dal percorso, non dal contenuto del file. */
+  /* The identity comes from the path, not from the file contents. */
   if (!g_str_equal (tpl->username, username) || tpl->finger != finger)
     {
       g_set_error (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
@@ -143,7 +143,7 @@ gxd_storage_delete (const char *username, int finger, GError **error)
       return FALSE;
     }
   dir = user_dir (username);
-  g_rmdir (dir);                /* solo se ormai vuota */
+  g_rmdir (dir);                /* only if it is now empty */
   return TRUE;
 }
 

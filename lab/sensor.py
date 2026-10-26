@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Wrapper riutilizzabile del sensore Goodix 27c6:5125 per la GUI di enroll.
+"""Reusable wrapper of the Goodix 27c6:5125 sensor for the enrollment GUI.
 
-Incapsula il ciclo di vita gia' validato in driver_5125.py (sync trasporto, TLS-PSK, config MCU)
-ed espone operazioni semplici: open(), capture_clear(), capture_touch(), close(). Non esegue MAI
-scritture sul sensore (niente provisioning E0): assume la PSK gia' presente (state/linux_psk.bin).
-Grazie alla regola udev uaccess gira da utente normale, senza sudo.
+Wraps the life cycle already validated in driver_5125.py (transport sync, TLS-PSK, MCU config)
+and exposes simple operations: open(), capture_clear(), capture_touch(), close(). It NEVER
+writes to the sensor (no E0 provisioning): it assumes the PSK is already there (state/linux_psk.bin).
+Thanks to the udev uaccess rule it runs as a normal user, without sudo.
 
-I frame tornano come array (H, W) uint16 nello stesso formato che si aspetta enroll_engine
-(preprocessor.decode del corpo immagine)."""
+Frames come back as (H, W) uint16 arrays in the same format enroll_engine expects
+(preprocessor.decode of the image body)."""
 
 import os
 import sys
@@ -17,7 +17,7 @@ import fcntl
 
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(_ROOT, "goodix-fp-dump"))
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # driver_5125.py sta in lab/
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # driver_5125.py lives in lab/
 sys.path.insert(0, os.path.dirname(__file__))
 
 import usb.core
@@ -30,7 +30,7 @@ from preprocessor import decode
 
 W, H = drv.SENSOR_WIDTH, drv.SENSOR_HEIGHT
 
-# sequenze di comando FDT letterali, dalla sessione del driver Windows (come in driver_5125)
+# literal FDT command sequences, from the Windows driver session (as in driver_5125)
 _FDT_ARM = b"\x0d\x01\x80\xb1\x80\xc1\x80\xa6\x80\xb6\x80\xa5\x80\xb6"
 _FDT_DOWN_ARM = b"\x0c\x01\x80\xb1\x80\xc1\x80\xa6\x80\xb6\x80\xa5\x80\xb6"
 _FDT_DOWN_WAIT = b"\x0c\x01\x80\xb2\x80\xc2\x80\xa7\x80\xb6\x80\xa6\x80\xb6"
@@ -38,9 +38,9 @@ _FDT_UP = b"\x0e\x01\x80\x90\x80\x9a\x80\x7b\x80\x95\x80\x8c\x80\xa3"
 
 
 def reset_usb(vendor=drv.VENDOR, product=drv.PRODUCT):
-    """Reset USB del device (ri-enumerazione) via USBDEVFS_RESET. Trova il nodo per VID/PID in
-    sysfs (nessun bus/indirizzo hardcoded) -> portabile su qualsiasi macchina. Non distruttivo.
-    Serve a partire sempre da uno stato pulito anche se la sessione precedente e' morta a meta'."""
+    """USB reset of the device (re-enumeration) through USBDEVFS_RESET. Finds the node by VID/PID in
+    sysfs (no hard-coded bus/address) -> portable to any machine. Non-destructive.
+    Used to always start from a clean state, even if the previous session died halfway."""
     vid, pid = f"{vendor:04x}", f"{product:04x}"
     for d in glob.glob("/sys/bus/usb/devices/*"):
         try:
@@ -64,9 +64,9 @@ class Sensor:
         self.device = None
         self.server = None
 
-    # ---- ciclo di vita ----
+    # ---- life cycle ----
     def _connect(self):
-        """Apre il trasporto e sincronizza. -> stringa firmware, o solleva."""
+        """Opens the transport and synchronizes. -> firmware string, or raises."""
         drv.detach_kernel(None)
         self.device = goodix.Device(drv.PRODUCT, protocol.USBProtocol)
         for _ in range(5):
@@ -80,14 +80,14 @@ class Sensor:
                 except Exception:
                     pass
                 time.sleep(0.2)
-        raise SystemError("sync fallito")
+        raise SystemError("sync failed")
 
     def open(self):
-        # Prova PRIMA a parlarci diretto: dopo un teardown pulito il device e' gia' a posto.
-        # Il reset USB rienumera il sensore (nuovo indirizzo) e, fatto a OGNI open, lo fa sparire
-        # per un istante ai verify consecutivi -> "sensore non trovato". Quindi il reset resta solo
-        # come SELF-HEALING, quando la sync diretta fallisce (stato sporco da crash a meta' TLS).
-        # (detach_kernel fa sys.exit se il device non e' enumerato: catturo anche SystemExit.)
+        # FIRST try to talk to it directly: after a clean teardown the device is already fine.
+        # The USB reset re-enumerates the sensor (new address) and, done on EVERY open, makes it vanish
+        # for a moment on consecutive verifies -> "sensor not found". So the reset stays only
+        # as SELF-HEALING, when the direct sync fails (dirty state after a crash halfway through TLS).
+        # (detach_kernel calls sys.exit if the device is not enumerated: SystemExit is caught too.)
         fw = None
         try:
             fw = self._connect()
@@ -102,10 +102,10 @@ class Sensor:
                     fw = None
             if fw is None:
                 raise SystemError(
-                    "sensore non sincronizzabile neanche dopo reset USB: potrebbe essere in uno "
-                    "stato bloccato profondo (serve recovery). Vedi lab/sensor_recover.py")
+                    "sensor cannot be synchronized even after a USB reset: it may be in a "
+                    "deep stuck state (recovery needed). See lab/sensor_recover.py")
         if not fw.startswith("GF_ST411SEC_APP_125"):
-            raise SystemError(f"firmware non previsto: {fw}")
+            raise SystemError(f"unexpected firmware: {fw}")
         self.firmware = fw
         self.device.enable_chip(True)
 
@@ -131,8 +131,8 @@ class Sensor:
             d.write_sensor_register(addr, val)
 
     def close(self):
-        # TEARDOWN PULITO: soft-reset dell'MCU cosi' il firmware riparte e il device non resta
-        # mai bloccato a meta' di una sessione TLS (causa principale del wedge).
+        # CLEAN TEARDOWN: soft reset of the MCU so the firmware restarts and the device is never
+        # left stuck halfway through a TLS session (the main cause of the wedge).
         try:
             if self.device is not None:
                 try:
@@ -144,7 +144,7 @@ class Sensor:
             pass
         self.device = None
 
-    # ---- acquisizione ----
+    # ---- capture ----
     def _read_image(self):
         enc = self.device.mcu_get_image(b"\x01\x00", goodix.FLAGS_TRANSPORT_LAYER_SECURITY)
         raw = bytes(enc)
@@ -158,21 +158,21 @@ class Sensor:
             except usb.core.USBError:
                 break
         if not plain or len(plain) < 8 + 7680:
-            raise SystemError("immagine non decifrata correttamente")
+            raise SystemError("image not decrypted correctly")
         return decode(plain[8:8 + 7680])
 
     def capture_clear(self):
-        """Frame di baseline (nessun dito). Da chiamare una volta dopo open()."""
+        """Baseline frame (no finger). To be called once after open()."""
         return self._read_image()
 
     def grab(self):
-        """Acquisizione CONTINUA: una singola immagine via mcu_get_image, senza la danza FDT
-        (niente attesa evento dito-giu' / sollevamento). Per la mappatura a scorrimento: l'utente
-        tiene il dito premuto e lo muove, noi acquisiamo di fila. Molto piu' veloce e fluido."""
+        """CONTINUOUS capture: a single image through mcu_get_image, without the FDT dance
+        (no waiting for finger-down / lift events). For swipe mapping: the user keeps the
+        finger pressed and moves it, we capture one frame after another. Much faster and smoother."""
         return self._read_image()
 
     def arm(self):
-        """Arma il rilevamento dito per il prossimo tocco."""
+        """Arms finger detection for the next touch."""
         d = self.device
         d.mcu_switch_to_fdt_mode(_FDT_ARM, True)
         d.mcu_switch_to_fdt_down(_FDT_DOWN_ARM, True)
@@ -180,7 +180,7 @@ class Sensor:
         d.query_mcu_state(b"\x55", True)
 
     def wait_touch_and_capture(self, tries=40):
-        """Attende il contatto del dito e acquisisce il frame. Va chiamato dopo arm()."""
+        """Waits for the finger to touch and captures the frame. Must be called after arm()."""
         for _ in range(tries):
             try:
                 self.device.mcu_switch_to_fdt_down(_FDT_DOWN_WAIT, True)
@@ -190,7 +190,7 @@ class Sensor:
         return self._read_image()
 
     def wait_lift(self, tries=40):
-        """Attende il sollevamento del dito prima del tocco successivo."""
+        """Waits for the finger to be lifted before the next touch."""
         for _ in range(tries):
             try:
                 self.device.mcu_switch_to_fdt_up(_FDT_UP)

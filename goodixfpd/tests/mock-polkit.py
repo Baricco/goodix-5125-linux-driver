@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-# mock-polkit.py - org.freedesktop.PolicyKit1 finto per i test.
+# mock-polkit.py - fake org.freedesktop.PolicyKit1 for the tests.
 #
-# Autorizza tutto tranne le azioni elencate (una per riga) nel file passato
-# come primo argomento, riletto a ogni richiesta. Le richieste vanno nel
-# file di log passato come secondo argomento.
+# Authorizes everything except the actions listed (one per line) in the file
+# given as first argument, reread at every request. Requests are written to
+# the log file given as second argument.
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 import sys

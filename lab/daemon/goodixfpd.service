@@ -1,32 +1,32 @@
 [Unit]
 Description=Goodix 27c6:5125 fingerprint authentication daemon
 Documentation=file:///docs/pam-integration.md
-# Parte quando il sensore e' presente (regola udev che marca systemd).
+# Starts when the sensor is present (udev rule that tags systemd).
 After=systemd-udevd.service
 
 [Service]
 Type=simple
-# Utente di sistema dedicato (crearlo: vedi docs/pam-integration.md). NON gira come root:
-# accede al sensore solo tramite il gruppo 'goodixfp' (regola udev 70-goodixfp.rules).
+# Dedicated system user (to create it: see docs/pam-integration.md). It does NOT run as root:
+# it reaches the sensor only through the 'goodixfp' group (udev rule 70-goodixfp.rules).
 User=goodixfp
 Group=goodixfp
 SupplementaryGroups=goodixfp
 
-# Percorso del repository (contiene lab/, goodix-fp-dump/).
-# Adatta WorkingDirectory/GOODIXFP_REPO all'installazione reale.
+# Repository path (contains lab/, goodix-fp-dump/).
+# Adapt WorkingDirectory/GOODIXFP_REPO to the real installation.
 WorkingDirectory=/opt/goodix-driver
 Environment=GOODIXFP_REPO=/opt/goodix-driver
 Environment=GOODIXFP_STATE=/var/lib/goodixfp
 Environment=GOODIXFP_SOCKET=/run/goodixfpd/sock
 ExecStart=/opt/goodix-driver/tools/.venv/bin/python /opt/goodix-driver/lab/daemon/goodixfpd.py
 
-# /run/goodixfpd creato con gruppo goodixfp -> il socket 0660 e' raggiungibile da root (PAM).
+# /run/goodixfpd created with group goodixfp -> the 0660 socket is reachable by root (PAM).
 RuntimeDirectory=goodixfpd
 RuntimeDirectoryMode=0750
 StateDirectory=goodixfp
 StateDirectoryMode=0750
 
-# Irrobustimento: il demone parla solo USB + socket locale, niente rete.
+# Hardening: the daemon talks only USB + a local socket, no network.
 RestartSec=2
 Restart=on-failure
 NoNewPrivileges=true
@@ -36,10 +36,10 @@ PrivateNetwork=true
 PrivateTmp=true
 ProtectKernelTunables=true
 ProtectControlGroups=true
-# AF_UNIX per il socket, AF_NETLINK perche' libusb lo usa per enumerare/hotplug.
+# AF_UNIX for the socket, AF_NETLINK because libusb uses it to enumerate/hotplug.
 RestrictAddressFamilies=AF_UNIX AF_NETLINK
-# Accesso al sensore USB: lasciato alla regola udev (GROUP=goodixfp), NON al device cgroup.
-# Un DeviceAllow troppo stretto qui negherebbe /dev/bus/usb e il demone non vedrebbe il sensore.
+# USB sensor access: left to the udev rule (GROUP=goodixfp), NOT to the device cgroup.
+# A DeviceAllow that is too strict here would deny /dev/bus/usb and the daemon would not see the sensor.
 
 [Install]
 WantedBy=multi-user.target

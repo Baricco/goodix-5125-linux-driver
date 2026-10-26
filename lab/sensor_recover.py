@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Recupero del sensore Goodix 27c6:5125 quando enumera ma non risponde (APP firmware non attivo).
+"""Recovery of the Goodix 27c6:5125 sensor when it enumerates but does not answer (APP firmware not running).
 
-Il device accetta le scritture USB ma non manda risposte: probabile MCU fermo / modalita' IAP dopo
-un reset andato male. Qui si tenta di FAR RIPARTIRE l'MCU con un soft-reset mandato "alla cieca"
-(l'ACK non arriva, lo ignoriamo), piu' clear-halt sugli endpoint e reset USB, poi si risincronizza
-con timeout lunghi. TUTTO NON DISTRUTTIVO: niente mcu_erase_app, niente scritture in flash (E0).
+The device accepts USB writes but sends no replies: probably the MCU is stopped / in IAP mode after
+a bad reset. Here we try to RESTART the MCU with a soft reset sent "blindly" (the ACK does not
+arrive, we ignore it), plus clear-halt on the endpoints and a USB reset, then resynchronize with
+long timeouts. ALL NON-DESTRUCTIVE: no mcu_erase_app, no flash writes (E0).
 
-Uso:  tools/.venv/bin/python lab/sensor_recover.py
+Usage:  tools/.venv/bin/python lab/sensor_recover.py
 """
 
 import os
@@ -41,7 +41,7 @@ def try_step(name, fn):
 
 
 def resync(dev, attempts=6, t=1.0):
-    """Prova a parlare col device con timeout lunghi. -> firmware str o None."""
+    """Tries to talk to the device with long timeouts. -> firmware str or None."""
     for i in range(attempts):
         try:
             dev.empty_buffer()
@@ -63,7 +63,7 @@ def resync(dev, attempts=6, t=1.0):
 
 
 def blind_reset(dev, soft_mcu):
-    """Manda il comando RESET senza aspettare l'ACK (che non arriva se l'APP e' ferma)."""
+    """Sends the RESET command without waiting for the ACK (which does not arrive if the APP is stopped)."""
     rs = 1
     byte = (rs) | (1 if soft_mcu else 0) << 1 | (rs) << 2
     dev.protocol.write(goodix.encode_message_pack(
@@ -82,22 +82,22 @@ def usb_reset():
 
 
 def hard_reenumerate():
-    """Unbind + rebind del device via sysfs = equivalente del Disable/Enable di Windows
-    (teardown + ri-enumerazione + riconfigurazione complete). Richiede root. -> busid o None."""
+    """Unbind + rebind of the device through sysfs = the equivalent of Windows' Disable/Enable
+    (complete teardown + re-enumeration + reconfiguration). Needs root. -> busid or None."""
     import glob
     vid, pid = f"{VENDOR:04x}", f"{PRODUCT:04x}"
     for p in glob.glob("/sys/bus/usb/devices/*"):
         try:
             if (open(os.path.join(p, "idVendor")).read().strip() == vid and
                     open(os.path.join(p, "idProduct")).read().strip() == pid):
-                busid = os.path.basename(p)      # es. "3-3"
+                busid = os.path.basename(p)      # e.g. "3-3"
                 try:
                     open("/sys/bus/usb/drivers/usb/unbind", "w").write(busid)
                     time.sleep(1.0)
                     open("/sys/bus/usb/drivers/usb/bind", "w").write(busid)
                     return busid
                 except PermissionError:
-                    log("unbind/rebind richiede root: rilancia con "
+                    log("unbind/rebind needs root: run it again with "
                         "'sudo tools/.venv/bin/python lab/sensor_recover.py'")
                     return None
         except OSError:
@@ -108,7 +108,7 @@ def hard_reenumerate():
 def main():
     d = usb.core.find(idVendor=VENDOR, idProduct=PRODUCT)
     if d is None:
-        sys.exit("sensore 27c6:5125 non trovato")
+        sys.exit("27c6:5125 sensor not found")
     for cfg in d:
         for intf in cfg:
             try:
@@ -118,22 +118,22 @@ def main():
                 pass
     usb.util.dispose_resources(d)
 
-    log("apro il trasporto…")
+    log("opening the transport…")
     dev = goodix.Device(PRODUCT, protocol.USBProtocol)
 
-    # 0) gia' risponde?
+    # 0) does it already answer?
     fw = resync(dev, attempts=2)
     if fw:
-        log(f"GIA' ATTIVO: firmware = {fw}"); return
+        log(f"ALREADY ACTIVE: firmware = {fw}"); return
 
-    # 1) clear-halt sugli endpoint
+    # 1) clear-halt on the endpoints
     try_step("clear_halt IN", lambda: usb.util.clear_halt(dev.protocol.device, dev.protocol.endpoint_in))
     try_step("clear_halt OUT", lambda: usb.util.clear_halt(dev.protocol.device, dev.protocol.endpoint_out))
     fw = resync(dev, attempts=3)
     if fw:
         log(f"RECUPERATO (clear_halt): firmware = {fw}"); return
 
-    # 2) soft-reset MCU alla cieca, poi risincronizza
+    # 2) blind MCU soft reset, then resynchronize
     for soft in (True, False):
         try_step(f"blind reset soft_mcu={soft}", lambda: blind_reset(dev, soft))
         time.sleep(1.5)
@@ -143,25 +143,25 @@ def main():
             pass
         fw = resync(dev, attempts=5, t=1.2)
         if fw:
-            log(f"RECUPERATO (reset MCU): firmware = {fw}"); return
+            log(f"RECOVERED (MCU reset): firmware = {fw}"); return
 
-    # 3) reset USB vero e proprio, riapri, risincronizza
+    # 3) a real USB reset, reopen, resynchronize
     try_step("USB reset", usb_reset)
     time.sleep(2.0)
     try:
         dev2 = goodix.Device(PRODUCT, protocol.USBProtocol)
         fw = resync(dev2, attempts=6, t=1.2)
         if fw:
-            log(f"RECUPERATO (USB reset): firmware = {fw}"); return
+            log(f"RECOVERED (USB reset): firmware = {fw}"); return
     except Exception as e:
-        log(f"riapertura fallita: {type(e).__name__}")
+        log(f"reopen failed: {type(e).__name__}")
 
-    # 4) unbind/rebind = equivalente del Disable/Enable di Windows (ri-enumerazione completa).
-    #    La cattura USB del driver Windows mostra che il recupero NON usa comandi vendor: e' solo
-    #    USB reset + ri-enumerazione + SET_CONFIGURATION. Questo e' il passo piu' vicino. Serve root.
+    # 4) unbind/rebind = the equivalent of Windows' Disable/Enable (complete re-enumeration).
+    #    The USB capture of the Windows driver shows that recovery uses NO vendor command: it is only
+    #    USB reset + re-enumeration + SET_CONFIGURATION. This is the closest step. Needs root.
     busid = hard_reenumerate()
     if busid:
-        log(f"unbind/rebind {busid} ok, riapro…")
+        log(f"unbind/rebind {busid} ok, reopening…")
         time.sleep(2.0)
         try:
             dev3 = goodix.Device(PRODUCT, protocol.USBProtocol)
@@ -169,12 +169,12 @@ def main():
             if fw:
                 log(f"RECUPERATO (unbind/rebind): firmware = {fw}"); return
         except Exception as e:
-            log(f"riapertura dopo rebind fallita: {type(e).__name__}")
+            log(f"reopen after rebind failed: {type(e).__name__}")
 
-    log("NON recuperato dal lato Linux. Secondo la cattura USB il driver Windows non usa comandi "
-        "speciali: il recupero e' USB reset + ri-enumerazione. Se nemmeno unbind/rebind basta, il "
-        "firmware e' in un wedge profondo: serve il driver ufficiale (VM Windows). "
-        "Prevenzione: teardown pulito (gia' attivo) per non arrivarci.")
+    log("NOT recovered from the Linux side. According to the USB capture the Windows driver uses no special "
+        "commands: recovery is USB reset + re-enumeration. If not even unbind/rebind is enough, the "
+        "firmware is in a deep wedge: the official driver is needed (Windows VM). "
+        "Prevention: clean teardown (already active) so it never gets there.")
     sys.exit(1)
 
 

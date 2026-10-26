@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""Mappatura a PUZZLE (pose-graph multi-frammento con fusione) per il Goodix 5125.
+"""PUZZLE mapping (multi-fragment pose graph with merging) for the Goodix 5125.
 
-Problema del mosaico a singola ancora: se un frame non si aggancia alla mappa corrente va perso, e
-l'utente deve ritrovare il bordo. Qui invece ogni scansione entra sempre in un PEZZO (frammento):
-  - si aggancia a un pezzo esistente -> lo ESTENDE;
-  - combacia con DUE o piu' pezzi -> fa da PONTE e li FONDE in uno piu' grande (riallineando);
-  - non combacia con nulla -> inizia un PEZZO NUOVO (niente va perso).
-I pezzi si assemblano iterativamente come un puzzle. La GUI mostra il pezzo piu' grande come mappa
-principale, gli altri come tessere da incastrare, e "dove sei" (ultimo frame) per non perdersi.
+The problem of a single-anchor mosaic: if a frame does not lock onto the current map it is lost,
+and the user has to find the edge again. Here every scan always goes into a PIECE (fragment):
+  - it locks onto an existing piece -> it EXTENDS it;
+  - it matches TWO or more pieces -> it acts as a BRIDGE and MERGES them into a bigger one (realigning);
+  - it matches nothing -> it starts a NEW PIECE (nothing is lost).
+The pieces are assembled iteratively like a puzzle. The GUI shows the biggest piece as the main
+map, the others as tiles still to fit, and "where you are" (last frame) so you do not get lost.
 
-Salvaguardie contro incastri sbagliati (che corromperebbero la mappa): per FONDERE serve un numero
-di inlier alto (BRIDGE_MIN) e la coerenza tra le registrazioni ai due pezzi; per estendere basta
-REG_MIN."""
+Safeguards against wrong fits (which would corrupt the map): MERGING needs a high number of
+inliers (BRIDGE_MIN) and consistency between the registrations to the two pieces; extending only
+needs REG_MIN."""
 
 import numpy as np
 import cv2
@@ -24,13 +24,13 @@ from preprocessor import preprocess
 
 W, H = 80, 64
 CANVAS = 600
-REG_MIN = 7          # inlier per agganciare/estendere un pezzo
-BRIDGE_MIN = 11      # inlier (su entrambi i pezzi) per fondere: piu' severo, evita fusioni errate
-FAST_INL = 14        # aggancio "solido" sul frammento corrente -> fast-path senza cercare su tutti
-NEIGH_DIST = 45      # px: due keyframe entro questa distanza si sovrappongono -> arco pose-graph
-LOOP_MIN_SEP = 12    # se un arco collega keyframe lontani nell'ordine di inserimento = chiusura anello
-SPACING = 9          # px minimi di spostamento per un nuovo keyframe
-VERIFY_MIN = 300     # soglia SIGFM (= enroll_engine.ACCEPT)
+REG_MIN = 7          # inliers to lock onto/extend a piece
+BRIDGE_MIN = 11      # inliers (on both pieces) to merge: stricter, avoids wrong merges
+FAST_INL = 14        # "solid" lock on the current fragment -> fast path without searching all of them
+NEIGH_DIST = 45      # px: two keyframes within this distance overlap -> pose-graph edge
+LOOP_MIN_SEP = 12    # if an edge links keyframes far apart in insertion order = loop closure
+SPACING = 9          # minimum px of displacement for a new keyframe
+VERIFY_MIN = 300     # SIGFM threshold (= enroll_engine.ACCEPT)
 IDENT = np.array([[1, 0, 0], [0, 1, 0]], np.float32)
 
 
@@ -40,8 +40,8 @@ def _center(pose):
 
 class Fragment:
     def __init__(self):
-        self.kfs = []        # [{feats, thumb, pose(2x3 coord-pezzo)}]
-        self.edges = []      # archi pose-graph: (i, j, (dx,dy,dth), w)
+        self.kfs = []        # [{feats, thumb, pose(2x3 piece coordinates)}]
+        self.edges = []      # pose-graph edges: (i, j, (dx,dy,dth), w)
         self.origin = np.array([[1, 0, CANVAS / 2 - W / 2],
                                 [0, 1, CANVAS / 2 - H / 2]], np.float32)
         self.acc = np.zeros((CANVAS, CANVAS), np.float32)
@@ -59,7 +59,7 @@ class Fragment:
         return len(self.kfs) - 1
 
     def apply_poses(self, xyt):
-        """Sostituisce le pose dei keyframe con quelle ottimizzate (Nx3) e ricostruisce."""
+        """Replaces the keyframe poses with the optimized ones (Nx3) and rebuilds."""
         for kf, p in zip(self.kfs, xyt):
             kf["pose"] = posegraph.xyt_to_pose(p[0], p[1], p[2])
         self.rebuild()
@@ -84,7 +84,7 @@ class Fragment:
         return mos, cnt, (x0, y0)
 
     def footprint_px(self, pose, x0, y0):
-        """Corner del frame (pose) in pixel del render, per il marker 'dove sei'."""
+        """Frame corners (pose) in render pixels, for the 'where you are' marker."""
         M = mz._compose(self.origin, pose)
         corners = np.array([[0, 0], [W, 0], [W, H], [0, H]], np.float32)
         pc = (M[:, :2] @ corners.T).T + M[:, 2]
@@ -95,14 +95,14 @@ class FragmentMapper:
     def __init__(self, clear):
         self.clear = clear
         self.frags = []
-        self.last = None        # (fragment, pose) ultimo frame piazzato
-        self.current = None     # ultimo frammento esteso (per il fast-path / vista)
-        self.prev = None        # {feats, pose, frag} ultimo frame tracciato (per l'odometria)
+        self.last = None        # (fragment, pose) of the last placed frame
+        self.current = None     # last extended fragment (for the fast path / view)
+        self.prev = None        # {feats, pose, frag} of the last tracked frame (for odometry)
 
-    # ---- registrazione ----
+    # ---- registration ----
     def _best_in(self, feats, frag):
-        # sottoinsieme limitato per restare veloci: keyframe recenti + l'ancora (primo) per
-        # chiudere i loop su aree vecchie. Evita l'O(N) su mappe grandi.
+        # a limited subset to stay fast: recent keyframes + the anchor (first one) to
+        # close loops over old areas. Avoids O(N) on large maps.
         cand = frag.kfs if len(frag.kfs) <= 9 else frag.kfs[-8:] + [frag.kfs[0]]
         best = None
         for kf in cand:
@@ -112,11 +112,11 @@ class FragmentMapper:
         return best
 
     def add_frame(self, frame):
-        # GATE DI FORZA: scarta i frame senza dito (rumore statico del sensore, forza ~0.03).
-        # Senza questo il rumore ha feature SIFT casuali e creerebbe tessere spazzatura.
+        # STRENGTH GATE: drops frames without a finger (static sensor noise, strength ~0.03).
+        # Without it the noise has random SIFT features and would create junk tiles.
         strength, ok = coverage.frame_quality(frame, self.clear)
         if not ok:
-            return {"status": "vuoto (niente dito)", "placed": False,
+            return {"status": "empty (no finger)", "placed": False,
                     "frags": len(self.frags), "strength": strength}
         img = preprocess(frame, self.clear)
         return self.ingest(sigfm.features(img), img)
@@ -129,8 +129,8 @@ class FragmentMapper:
         return self._info(status, True, fr, IDENT.copy(), [])
 
     def _link_and_optimize(self, frag, j):
-        """Collega il keyframe j ai vicini SPAZIALI (archi pose-graph); se chiude un anello
-        (arco verso un keyframe lontano nel tempo) ottimizza e raddrizza la deriva."""
+        """Links keyframe j to its SPATIAL neighbours (pose-graph edges); if it closes a loop
+        (an edge towards a keyframe far away in time) it optimizes and straightens the drift."""
         cj = _center(frag.kfs[j]["pose"])[:2]
         fj = frag.kfs[j]["feats"]
         loop = False
@@ -155,33 +155,33 @@ class FragmentMapper:
         return False
 
     def _place(self, frag, feats, img, pose, inl, status):
-        """Piazza un frame a una posa data su un frammento; aggiorna last/current/prev."""
+        """Places a frame at a given pose on a fragment; updates last/current/prev."""
         dmin = min(np.hypot(*(_center(pose)[:2] - c[:2])) for c in frag.centers())
         placed = dmin >= SPACING
         if placed:
             j = frag.add_kf(feats, img, pose)
             if self._link_and_optimize(frag, j):
-                pose = frag.kfs[j]["pose"]      # posa raddrizzata dall'ottimizzazione
+                pose = frag.kfs[j]["pose"]      # pose straightened by the optimization
         self.last = (frag, pose); self.current = frag
         self.prev = {"feats": feats, "pose": pose, "frag": frag}
-        return self._info(status if placed else "già coperto qui", placed, frag, pose, [], inl)
+        return self._info(status if placed else "already covered here", placed, frag, pose, [], inl)
 
     def ingest(self, feats, img):
         if feats[1] is None or len(feats[0]) < sigfm.MIN_MATCH:
             return {"status": "debole", "placed": False, "frags": len(self.frags)}
 
         if not self.frags:
-            return self._new_fragment(feats, img, "inizio mappa")
+            return self._new_fragment(feats, img, "map started")
 
-        # 1) FAST PATH: lo scorrimento continuo resta sul frammento corrente -> estendi subito.
+        # 1) FAST PATH: continuous swiping stays on the current fragment -> extend right away.
         cur = self.current if self.current in self.frags else None
         if cur is not None:
             b = self._best_in(feats, cur)
             if b and b[2] >= FAST_INL:
                 kf, M, inl = b
-                return self._place(cur, feats, img, mz._compose(kf["pose"], M), inl, "mappa estesa")
+                return self._place(cur, feats, img, mz._compose(kf["pose"], M), inl, "map extended")
 
-        # 2) RICERCA COMPLETA: relocalizzazione su tutti i pezzi + ponti.
+        # 2) FULL SEARCH: relocalization over all pieces + bridges.
         hits = {}
         for fr in self.frags:
             b = self._best_in(feats, fr)
@@ -207,26 +207,26 @@ class FragmentMapper:
             if bridged:
                 anchor.rebuild()
             elif jj is not None and self._link_and_optimize(anchor, jj):
-                poseA = anchor.kfs[jj]["pose"]     # raddrizzata dal pose-graph (chiusura anello)
+                poseA = anchor.kfs[jj]["pose"]     # straightened by the pose graph (loop closure)
             reloc = (anchor is not cur)
             self.last = (anchor, poseA); self.current = anchor
             self.prev = {"feats": feats, "pose": poseA, "frag": anchor}
-            status = (f"ponte: uniti {len(bridged)} pezzi" if bridged
-                      else ("ritrovato su un pezzo" if reloc else
-                            ("mappa estesa" if placed else "già coperto qui")))
+            status = (f"bridge: merged {len(bridged)} pieces" if bridged
+                      else ("found again on a piece" if reloc else
+                            ("map extended" if placed else "already covered here")))
             return self._info(status, placed or bool(bridged), anchor, poseA, bridged, inlA)
 
-        # 3) ODOMETRIA frame-a-frame: nessun keyframe aggancia, ma il frame si sovrappone al
-        #    PRECEDENTE (scorrimento lento) -> proseguo la traccia nello stesso sistema di coordinate.
-        #    Cosi' il marker non sparisce e la zona nuova entra nel pezzo corrente (niente frammenti).
+        # 3) frame-to-frame ODOMETRY: no keyframe locks, but the frame overlaps the
+        #    PREVIOUS one (slow swipe) -> keep tracking in the same coordinate system.
+        #    This way the marker does not disappear and the new area joins the current piece (no fragments).
         if self.prev is not None and self.prev["frag"] in self.frags:
             ok, M, inl = coverage.estimate_affine(self.prev["feats"], feats)   # new -> prev
             if ok and inl >= REG_MIN:
                 pose = mz._compose(self.prev["pose"], M)
                 return self._place(self.prev["frag"], feats, img, pose, inl, "traccia")
 
-        # 4) PEZZO NUOVO: traccia persa davvero (dito sollevato o salto netto).
-        return self._new_fragment(feats, img, "nuovo pezzo")
+        # 4) NEW PIECE: tracking really lost (finger lifted or a clear jump).
+        return self._new_fragment(feats, img, "new piece")
 
     def _info(self, status, placed, frag, pose, bridged, inl=None):
         d = {"status": status, "placed": placed, "frags": len(self.frags),
@@ -236,19 +236,19 @@ class FragmentMapper:
             d["inl"] = inl
         return d
 
-    # ---- resa ----
+    # ---- rendering ----
     def main(self):
         return max(self.frags, key=lambda f: len(f.kfs)) if self.frags else None
 
     def view(self):
-        """Frammento da mostrare = quello DOVE SEI ora (current), altrimenti il principale.
-        Cosi' il marker 'sei qui' resta sempre visibile anche se ti sposti su un pezzo staccato."""
+        """Fragment to show = the one WHERE YOU ARE now (current), otherwise the main one.
+        This way the 'you are here' marker stays visible even when you move onto a detached piece."""
         if self.current is not None and self.current in self.frags:
             return self.current
         return self.main()
 
     def render_main(self):
-        """BGR del pezzo corrente con buchi (rosso) e marker 'sei qui'."""
+        """BGR of the current piece with holes (red) and the 'you are here' marker."""
         fr = self.view()
         if fr is None:
             return None, 0.0
@@ -257,7 +257,7 @@ class FragmentMapper:
         vis = cv2.cvtColor(mos, cv2.COLOR_GRAY2BGR)
         vis[hole > 0] = (40, 40, 220)
         if self.last and self.last[0] is fr:
-            poly = fr.footprint_px(self.last[1], x0, y0)   # marker "sei qui"
+            poly = fr.footprint_px(self.last[1], x0, y0)   # "you are here" marker
             overlay = vis.copy()
             cv2.fillPoly(overlay, [poly], (70, 200, 240))
             cv2.addWeighted(overlay, 0.30, vis, 0.70, 0, vis)
@@ -265,7 +265,7 @@ class FragmentMapper:
         return vis, frac
 
     def pieces(self):
-        """Miniature dei pezzi NON principali (tessere da incastrare)."""
+        """Thumbnails of the NON-main pieces (tiles still to fit)."""
         main = self.main()
         out = []
         for fr in self.frags:
@@ -282,10 +282,10 @@ class FragmentMapper:
         _, cnt, _ = fr.render()
         return mz.holes(cnt)
 
-    # ---- verifica ----
+    # ---- verification ----
     def verify(self, frame, threshold=VERIFY_MIN):
-        """Accetta se ALMENO un keyframe aggancia (score>=soglia). Early-exit: i pezzi piu' grandi
-        (dove stanno i keyframe utili) per primi, si ferma al primo aggancio -> veloce."""
+        """Accepts if AT LEAST one keyframe locks (score>=threshold). Early exit: the biggest pieces
+        (where the useful keyframes are) first, it stops at the first lock -> fast."""
         feats = sigfm.features(preprocess(frame, self.clear))
         best = 0
         for fr in sorted(self.frags, key=lambda f: -len(f.kfs)):
@@ -298,8 +298,8 @@ class FragmentMapper:
         return False, best, 0
 
     def best_score(self, feats, cap=VERIFY_MIN):
-        """Miglior score SIGFM di feats (gia' estratte) contro i keyframe; early-exit a cap.
-        Per la verifica contro piu' impronte senza ri-preprocessare."""
+        """Best SIGFM score of feats (already extracted) against the keyframes; early exit at cap.
+        For verification against several fingerprints without preprocessing again."""
         best = 0
         for fr in sorted(self.frags, key=lambda f: -len(f.kfs)):
             for kf in fr.kfs:
@@ -311,12 +311,12 @@ class FragmentMapper:
         return best
 
     def prune(self, min_tiles=2):
-        """Rimuove i pezzetti troppo piccoli (bordi/rumore, inutili alla verifica). -> n rimossi."""
+        """Removes pieces that are too small (edges/noise, useless for verification). -> number removed."""
         before = len(self.frags)
         self.frags = [f for f in self.frags if len(f.kfs) >= min_tiles]
         return before - len(self.frags)
 
-    # ---- persistenza ----
+    # ---- persistence ----
     def save(self, path):
         pts, desc, splits, frag_ids, poses, thumbs = [], [], [], [], [], []
         for fid, fr in enumerate(self.frags):
@@ -335,7 +335,7 @@ class FragmentMapper:
     def load(cls, path):
         z = np.load(path)
         if "frag_ids" not in z:
-            raise ValueError("non e' un template a frammenti")
+            raise ValueError("not a fragment template")
         s = cls(z["clear"].astype(np.uint16))
         pts, desc, splits, fids, poses, thumbs = (z["pts"], z["desc"], z["splits"],
                                                   z["frag_ids"], z["poses"], z["thumbs"])

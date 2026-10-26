@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
-"""Prototipo driver Linux per Goodix 27c6:5125 (firmware GF_ST411SEC_APP_12508).
+"""Linux driver prototype for the Goodix 27c6:5125 (firmware GF_ST411SEC_APP_12508).
 
-Provisioning PSK autonomo (come i driver open source per questo chip): genera una PSK
-nostra, la scrive nel sensore con un solo comando E0 preservando il blob bb010002
-esistente, poi stabilisce la sessione TLS-PSK e acquisisce immagini grezze.
+Standalone PSK provisioning (like the open source drivers for this chip): it generates our own
+PSK, writes it to the sensor with a single E0 command preserving the existing bb010002 blob,
+then sets up the TLS-PSK session and captures raw images.
 
-Riusa il trasporto USB e il framing A0 di goodix-fp-dump (goodix.py, protocol.py).
-L'algoritmo della busta PSK e' quello pubblicato da grold/sorguido (lab/pairing.py),
-verificato byte-per-byte contro il firmware 12508.
+Reuses the USB transport and the A0 framing of goodix-fp-dump (goodix.py, protocol.py).
+The PSK envelope algorithm is the one published by grold/sorguido (lab/pairing.py),
+verified byte for byte against firmware 12508.
 
-Sicurezza: la scrittura E0 tocca solo il settore 4 della flash (store PSK), e' reversibile
-e non puo' bloccare il chip (vedi re/analisi-driver-windows.md). Richiede --write per
-eseguire davvero la scrittura.
+Safety: the E0 write touches only sector 4 of the flash (PSK store), is reversible and
+cannot brick the chip (see re/analisi-driver-windows.md). It needs --write to really
+perform the write.
 
-Uso:
-  sudo .venv/bin/python lab/driver_5125.py --probe                # sola lettura
-  sudo .venv/bin/python lab/driver_5125.py --write --capture      # provisioning + immagine
+Usage:
+  sudo .venv/bin/python lab/driver_5125.py --probe                # read only
+  sudo .venv/bin/python lab/driver_5125.py --write --capture      # provisioning + image
 """
 
 import argparse
@@ -28,7 +28,7 @@ import sys
 import threading
 import time
 
-# lab/ sta dentro il repo: goodix-fp-dump/, state/ e captures/ restano nella radice.
+# lab/ is inside the repo: goodix-fp-dump/, state/ and captures/ stay at the root.
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "goodix-fp-dump"))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -49,7 +49,7 @@ WAIT_FOR_FINGER = False
 CAPTURE_TAG = "fingerprint"
 ENROLL_COUNT = 1
 
-# Blocco config catturato dalla sessione del driver Windows (0x90), 224 byte.
+# Config block captured from the Windows driver session (0x90), 224 bytes.
 CONFIG90 = open(os.path.join(ROOT, "captures", "config90.bin"), "rb").read()
 
 
@@ -64,18 +64,18 @@ def load_or_create_psk():
     if os.path.exists(PSK_STORE):
         psk = open(PSK_STORE, "rb").read()
         if len(psk) == 32:
-            log(f"PSK esistente caricata da {PSK_STORE}")
+            log(f"existing PSK loaded from {PSK_STORE}")
             return psk
     psk = os.urandom(32)
     fd = os.open(PSK_STORE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     os.write(fd, psk)
     os.close(fd)
-    log(f"PSK nuova generata e salvata in {PSK_STORE}")
+    log(f"new PSK generated and saved in {PSK_STORE}")
     return psk
 
 
 def read_bb010002(device):
-    """Legge il blob bb010002 attuale dal sensore, da preservare nella scrittura E0."""
+    """Reads the current bb010002 blob from the sensor, to be preserved in the E0 write."""
     ok, flags, value = device.preset_psk_read(0xBB010002)
     if not ok:
         return None
@@ -83,24 +83,24 @@ def read_bb010002(device):
 
 
 def provision(device, psk):
-    """Scrive la PSK nel sensore con un solo E0: TLV bb010002 (preservato) + bb010003 (nostro).
+    """Writes the PSK to the sensor with a single E0: TLV bb010002 (preserved) + bb010003 (ours).
 
-    Layout del corpo E0 identico a grold e alla cattura: 8+332 + 8+102 = 450, pad a 452.
+    E0 body layout identical to grold and to the capture: 8+332 + 8+102 = 450, padded to 452.
     """
     envelope, validator = pairing.build_envelope(psk)
-    log(f"validator atteso (bb020003) = {validator.hex()}")
+    log(f"expected validator (bb020003) = {validator.hex()}")
 
     existing = read_bb010002(device)
     if existing is None or len(existing) != 332:
         raise SystemError(f"bb010002 assente o lunghezza inattesa: {existing and len(existing)}")
-    log(f"bb010002 esistente preservato ({len(existing)} byte)")
+    log(f"existing bb010002 preserved ({len(existing)} bytes)")
 
     body = struct.pack("<II", 0xBB010002, 332) + existing
     body += struct.pack("<II", 0xBB010003, 102) + envelope
     body += b"\x00" * ((-len(body)) % 4)
     assert len(body) == 452, len(body)
 
-    # E0 grezzo (preset_psk_write incapsula un solo TLV, qui ne servono due): framing A0 diretto
+    # raw E0 (preset_psk_write wraps a single TLV, two are needed here): direct A0 framing
     device.protocol.write(
         goodix.encode_message_pack(
             goodix.encode_message_protocol(body, goodix.COMMAND_PRESET_PSK_WRITE_R)))
@@ -111,20 +111,20 @@ def provision(device, psk):
     resp = goodix.check_message_protocol(
         goodix.check_message_pack(device.protocol.read()), goodix.COMMAND_PRESET_PSK_WRITE_R)
     if not resp or resp[0] != 0x00:
-        raise SystemError(f"E0 rifiutato dal sensore: {resp.hex() if resp else None}")
-    log("E0 accettato, verifico validator sul sensore")
+        raise SystemError(f"E0 refused by the sensor: {resp.hex() if resp else None}")
+    log("E0 accepted, checking the validator on the sensor")
 
     ok, flags, got = device.preset_psk_read(0xBB020003)
     if not ok or got != validator:
-        raise SystemError(f"validator non combacia: sensore={got.hex() if got else None}")
-    log("validator confermato dal sensore: PSK attiva e nota a noi")
+        raise SystemError(f"validator does not match: sensor={got.hex() if got else None}")
+    log("validator confirmed by the sensor: PSK active and known to us")
 
 
 # --------------------------------------------------------------------- TLS bridge
 
 class TlsPskServer:
-    """Server TLS-PSK in-process. Fa da ponte tra i record TLS del sensore (canale B0)
-    e un contesto SSL OpenSSL via memory BIO."""
+    """In-process TLS-PSK server. Bridges the sensor's TLS records (B0 channel)
+    and an OpenSSL SSL context through memory BIOs."""
 
     def __init__(self, psk):
         self.psk = psk
@@ -176,7 +176,7 @@ def _b0_read(device):
 
 
 def tls_handshake(device, server):
-    """Handshake TLS-PSK sul canale B0. Flusso (dalla cattura):
+    """TLS-PSK handshake on the B0 channel. Flow (from the capture):
     device: ClientHello -> host: ServerHello+Done -> device: CKE+CCS+Finished -> host: CCS+Finished.
     """
     client_hello = device.request_tls_connection()
@@ -184,36 +184,36 @@ def tls_handshake(device, server):
 
     done = False
     for _ in range(24):
-        done = server.do_handshake_step()   # consuma l'input, produce output se pronto
+        done = server.do_handshake_step()   # consume the input, produce output if ready
         out = server.pull()
         if out:
-            _b0_write(device, out)           # ServerHello+Done, poi CCS+Finished
+            _b0_write(device, out)           # ServerHello+Done, then CCS+Finished
         if done:
             break
-        # il server attende altri record dal device (CKE, CCS, Finished)
+        # the server waits for more records from the device (CKE, CCS, Finished)
         try:
             server.feed(_b0_read(device))
         except usb.core.USBError:
             time.sleep(0.01)
     if not done:
-        raise SystemError("handshake TLS-PSK non completato")
-    log(f"handshake TLS-PSK completato lato host (cipher {server.sslobj.cipher()})")
-    time.sleep(0.05)  # il device deve processare il nostro Finished (cfr. goodix-fp-dump)
+        raise SystemError("TLS-PSK handshake not completed")
+    log(f"TLS-PSK handshake completed on the host side (cipher {server.sslobj.cipher()})")
+    time.sleep(0.05)  # the device must process our Finished (cf. goodix-fp-dump)
     for attempt in range(3):
         try:
             device.tls_successfully_established()
             break
         except usb.core.USBError as e:
-            log(f"tls_successfully_established ritento ({attempt + 1}): {type(e).__name__}")
+            log(f"tls_successfully_established retry ({attempt + 1}): {type(e).__name__}")
             time.sleep(0.1)
-    log("sessione TLS-PSK stabilita")
+    log("TLS-PSK session established")
 
 
 # ------------------------------------------------------------------- init + image
 
 def decode_image(data):
-    """Spacchetta l'immagine grezza: 4 pixel a 12 bit ogni 6 byte, poi rimappa dall'ordine
-    di trasmissione (colonna-major) al raster 80x64. Mappatura dal decoder di grold.
+    """Unpacks the raw image: 4 12-bit pixels every 6 bytes, then remaps from the transmission
+    order (column major) to the 80x64 raster. Mapping from grold's decoder.
     """
     n = SENSOR_WIDTH * SENSOR_HEIGHT
     samples = [0] * n
@@ -232,7 +232,7 @@ def decode_image(data):
 
 
 def write_pgm(pixels, path):
-    """Salva come PGM 8 bit, scalando i valori 12 bit a 0-255."""
+    """Saves as an 8-bit PGM, scaling the 12-bit values to 0-255."""
     with open(path, "w") as f:
         f.write(f"P2\n{SENSOR_WIDTH} {SENSOR_HEIGHT}\n255\n")
         for i, p in enumerate(pixels[:SENSOR_WIDTH * SENSOR_HEIGHT]):
@@ -270,7 +270,7 @@ def init_and_capture(device, server):
     if WAIT_FOR_FINGER or ENROLL_COUNT > 1:
         n = ENROLL_COUNT if ENROLL_COUNT > 1 else 1
         for i in range(n):
-            # arma il rilevamento dito (FDT)
+            # arm finger detection (FDT)
             device.mcu_switch_to_fdt_mode(
                 b"\x0d\x01\x80\xb1\x80\xc1\x80\xa6\x80\xb6\x80\xa5\x80\xb6", True)
             device.mcu_switch_to_fdt_down(
@@ -278,15 +278,15 @@ def init_and_capture(device, server):
             device.nop()
             device.query_mcu_state(b"\x55", True)
             if n > 1:
-                # enroll per COPERTURA: guida l'utente a coprire zone diverse del polpastrello
-                # (vedi docs/matching.md) cosi' che ogni tocco futuro si sovrapponga a un frame.
-                zones = ["centro", "punta", "base", "lato sinistro", "lato destro",
-                         "punta-sinistra", "punta-destra", "base-sinistra", "base-destra"]
+                # COVERAGE enrollment: guide the user to cover different areas of the fingertip
+                # (see docs/matching.md) so that every future touch overlaps a frame.
+                zones = ["centro", "punta", "base", "left side", "right side",
+                         "tip-left", "tip-right", "base-left", "base-right"]
                 zone = zones[i % len(zones)]
-                log(f">>> tocco {i + 1}/{n}: appoggia il dito spostandolo verso {zone} <<<")
+                log(f">>> touch {i + 1}/{n}: place the finger moving it towards {zone} <<<")
             else:
-                log(">>> appoggia il dito sul sensore (hai ~30s) <<<")
-            # attende il contatto
+                log(">>> place the finger on the sensor (you have ~30s) <<<")
+            # wait for contact
             for attempt in range(10):
                 try:
                     device.mcu_switch_to_fdt_down(
@@ -297,8 +297,8 @@ def init_and_capture(device, server):
             tag = f"{CAPTURE_TAG}_{i:02d}" if n > 1 else CAPTURE_TAG
             _capture_frame(device, server, tag)
             if n > 1 and i < n - 1:
-                # attende il sollevamento del dito prima del tocco successivo
-                log("    solleva il dito")
+                # wait for the finger to be lifted before the next touch
+                log("    lift the finger")
                 for attempt in range(10):
                     try:
                         device.mcu_switch_to_fdt_up(
@@ -309,9 +309,9 @@ def init_and_capture(device, server):
 
 
 def _capture_frame(device, server, name):
-    # mcu_get_image restituisce gia' il record TLS sbustato (payload B2)
+    # mcu_get_image already returns the unwrapped TLS record (B2 payload)
     enc = device.mcu_get_image(b"\x01\x00", goodix.FLAGS_TRANSPORT_LAYER_SECURITY)
-    # l'immagine puo' arrivare su piu' pacchetti B0: leggi finche' il TLS non produce output
+    # the image can arrive in several B0 packets: read until TLS produces output
     raw = bytes(enc)
     plain = server.decrypt(raw)
     for _ in range(8):
@@ -325,15 +325,15 @@ def _capture_frame(device, server, name):
             break
     os.makedirs("captures", exist_ok=True)
     open(f"captures/{name}_enc.bin", "wb").write(raw)
-    log(f"[{name}] record cifrato ricevuto: {len(raw)} byte")
+    log(f"[{name}] encrypted record received: {len(raw)} bytes")
     if plain:
         open(f"captures/{name}_plain.bin", "wb").write(plain)
         body = plain[8:-5] if len(plain) > 13 else plain
         img = decode_image(body)
         write_pgm(img, f"{name}.pgm")
-        log(f"[{name}] immagine decifrata {len(plain)} byte -> {len(img)} pixel, salvata {name}.pgm")
+        log(f"[{name}] decrypted image {len(plain)} bytes -> {len(img)} pixels, saved {name}.pgm")
     else:
-        log(f"[{name}] nessun dato immagine decifrato: controlla captures/{name}_enc.bin")
+        log(f"[{name}] no image data decrypted: check captures/{name}_enc.bin")
 
 
 # ---------------------------------------------------------------------------- main
@@ -342,7 +342,7 @@ def detach_kernel(dev):
     import usb.core, usb.util
     d = usb.core.find(idVendor=VENDOR, idProduct=PRODUCT)
     if d is None:
-        sys.exit("sensore non trovato sull'host")
+        sys.exit("sensor not found on the host")
     for intf in d.get_active_configuration():
         n = intf.bInterfaceNumber
         try:
@@ -355,12 +355,12 @@ def detach_kernel(dev):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--write", action="store_true", help="esegui la scrittura PSK (E0)")
-    ap.add_argument("--capture", action="store_true", help="init TLS e acquisisci immagine")
-    ap.add_argument("--probe", action="store_true", help="solo lettura")
-    ap.add_argument("--finger", action="store_true", help="dopo il clear, attendi il dito e acquisisci l'impronta")
-    ap.add_argument("--tag", default="fingerprint", help="nome file per l'impronta acquisita")
-    ap.add_argument("--enroll", type=int, default=1, help="numero di tocchi da acquisire in sessione (template multi-frame)")
+    ap.add_argument("--write", action="store_true", help="perform the PSK write (E0)")
+    ap.add_argument("--capture", action="store_true", help="init TLS and capture an image")
+    ap.add_argument("--probe", action="store_true", help="read only")
+    ap.add_argument("--finger", action="store_true", help="after the clear frame, wait for the finger and capture the fingerprint")
+    ap.add_argument("--tag", default="fingerprint", help="file name for the captured fingerprint")
+    ap.add_argument("--enroll", type=int, default=1, help="number of touches to capture in the session (multi-frame template)")
     args = ap.parse_args()
     global WAIT_FOR_FINGER, CAPTURE_TAG, ENROLL_COUNT
     WAIT_FOR_FINGER = args.finger
@@ -370,8 +370,8 @@ def main():
     detach_kernel(None)
     device = goodix.Device(PRODUCT, protocol.USBProtocol)
 
-    # Il buffer del sensore puo' contenere una risposta stale da una sessione precedente:
-    # drena e ritenta finche' firmware_version non si sincronizza.
+    # The sensor buffer may hold a stale reply from a previous session:
+    # drain and retry until firmware_version synchronizes.
     fw = None
     for attempt in range(5):
         try:
@@ -380,17 +380,17 @@ def main():
             fw = device.firmware_version()
             break
         except Exception as e:
-            log(f"sync tentativo {attempt + 1}: {type(e).__name__}, ridreno il buffer")
+            log(f"sync attempt {attempt + 1}: {type(e).__name__}, draining the buffer again")
             try:
                 device.empty_buffer()
             except Exception:
                 pass
             time.sleep(0.2)
     if fw is None:
-        sys.exit("impossibile sincronizzare il trasporto col sensore")
+        sys.exit("cannot synchronize the transport with the sensor")
     log(f"firmware = {fw}")
     if not fw.startswith("GF_ST411SEC_APP_125"):
-        sys.exit(f"firmware non previsto: {fw}")
+        sys.exit(f"unexpected firmware: {fw}")
     device.enable_chip(True)
 
     if args.probe:

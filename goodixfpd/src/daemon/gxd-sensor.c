@@ -1,13 +1,13 @@
-/* gxd-sensor.c - sensore USB 27c6:5125/5135 sopra il core bloccante.
+/* gxd-sensor.c - USB sensor 27c6:5125/5135 on top of the blocking core.
  *
- * Stessa logica del driver libfprint goodixgf che sostituisce:
- *   - apertura: USB -> init (PSK, TLS, baseline) in un thread;
- *   - acquisizione: gx_capture() -> immagine 8 bit (pipeline "ridge") ->
- *     controllo di contrasto -> SIFT; dopo ogni tocco si aspetta che il
- *     dito si sollevi (o 15 s);
- *   - la baseline di finger-detect si ricampiona a freddo alla prima apertura
- *     di ogni avvio (prima lo faceva goodixgf-warmup.service).
- * Le variabili GOODIX_* del core restano valide (drop-in di fprintd.service).
+ * Same logic as the libfprint goodixgf driver it replaces:
+ *   - opening: USB -> init (PSK, TLS, baseline) in a thread;
+ *   - capture: gx_capture() -> 8-bit image ("ridge" pipeline) -> contrast
+ *     check -> SIFT; after every touch it waits for the finger to be lifted
+ *     (or 15 s);
+ *   - the finger-detect baseline is resampled cold on the first open after
+ *     every boot (goodixgf-warmup.service used to do this).
+ * The core's GOODIX_* variables stay valid (fprintd.service drop-in).
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -17,13 +17,13 @@
 #include "gxd-template.h"
 #include "goodix.h"
 
-/* Contrasto minimo delle creste (std del passa-banda, conteggi a 12 bit):
- * dito pieno ~110-175, vuoto o sfiorato ~2-5. Sotto soglia si chiede di
- * ripetere invece di confrontare il rumore fisso del sensore.
- * GOODIX_MIN_RIDGE la cambia (0 = disattivato). */
+/* Minimum ridge contrast (std of the band-pass, 12-bit counts): full finger
+ * ~110-175, empty or barely touched ~2-5. Below the threshold the user is
+ * asked to repeat instead of matching the sensor's fixed noise.
+ * GOODIX_MIN_RIDGE changes it (0 = disabled). */
 #define MIN_RIDGE           10.0
 #define FINGER_UP_TIMEOUT   15000
-/* Errori di trasporto consecutivi oltre i quali il sensore e' perso. */
+/* Consecutive transport errors after which the sensor is considered lost. */
 #define MAX_TRANSPORT_ERRORS 10
 
 enum { SIGNAL_FINGER, SIGNAL_SCAN, SIGNAL_LOST, N_SIGNALS };
@@ -33,12 +33,12 @@ struct _GxdSensor
 {
   GObject            parent;
   GMainContext      *ctx;
-  struct goodix_dev *gx;        /* valido da open a close */
+  struct goodix_dev *gx;        /* valid from open to close */
   gboolean           open;
-  struct Worker     *worker;    /* scansione in corso */
-  guint              stopping;  /* scansioni in attesa di join */
-  gint               stop;      /* atomico */
-  guint              gen;       /* generazione della scansione corrente */
+  struct Worker     *worker;    /* scan in progress */
+  guint              stopping;  /* scans waiting to be joined */
+  gint               stop;      /* atomic */
+  guint              gen;       /* generation of the current scan */
   gboolean           scanning;
 };
 
@@ -53,7 +53,7 @@ gxd_scan_free (GxdScan *scan)
   g_free (scan);
 }
 
-/* ---- eventi dal thread al contesto principale ---- */
+/* ---- events from the thread to the main context ---- */
 
 typedef enum { EV_FINGER, EV_SCAN, EV_LOST } EventType;
 
@@ -83,7 +83,7 @@ event_dispatch (gpointer data)
   Event *ev = data;
   GxdSensor *self = ev->self;
 
-  /* Eventi di una scansione gia' fermata: scartati. */
+  /* Events of a scan already stopped: discarded. */
   if (ev->gen != self->gen || !self->scanning)
     return G_SOURCE_REMOVE;
 
@@ -118,7 +118,7 @@ post (GxdSensor *self, guint gen, EventType type, gboolean present,
                               ev, event_free);
 }
 
-/* ---- presenza del lettore ---- */
+/* ---- reader presence ---- */
 
 gboolean
 gxd_sensor_present (void)
@@ -146,11 +146,11 @@ gxd_sensor_present (void)
   return FALSE;
 }
 
-/* ---- apertura ---- */
+/* ---- opening ---- */
 
-/* Al primo avvio del sensore dopo il boot la baseline salvata si butta: a
- * freddo le soglie di finger-detect di una sessione calda non scattano piu'
- * e il core la ricampiona durante l'init (senza dito sul sensore). */
+/* On the first sensor start after boot the saved baseline is thrown away:
+ * when cold, the finger-detect thresholds of a warm session no longer fire,
+ * and the core resamples it during init (with no finger on the sensor). */
 static void
 reset_baseline_on_new_boot (void)
 {
@@ -247,7 +247,7 @@ gxd_sensor_open (GxdSensor *self, GCancellable *cancellable,
 
   self->gx = g_new0 (struct goodix_dev, 1);
   self->gx->vid = GOODIX_VID;
-  self->gx->pid = 0;                    /* 0x5125 o 0x5135 */
+  self->gx->pid = 0;                    /* 0x5125 or 0x5135 */
   inner = g_task_new (self, cancellable, open_done, outer);
   g_task_set_task_data (inner, self->gx, NULL);
   g_task_run_in_thread (inner, open_thread);
@@ -265,7 +265,7 @@ gxd_sensor_is_open (GxdSensor *self)
   return self->open;
 }
 
-/* ---- scansione ---- */
+/* ---- scanning ---- */
 
 typedef struct Worker {
   GxdSensor *self;
@@ -290,7 +290,7 @@ min_ridge (void)
   return e && *e ? g_ascii_strtod (e, NULL) : MIN_RIDGE;
 }
 
-/* Immagine 16 bit -> GxdScan (frame o "riprova"). */
+/* 16-bit image -> GxdScan (frame or "retry"). */
 static GxdScan *
 process (struct goodix_dev *gx, const uint8_t *img16)
 {
@@ -347,8 +347,8 @@ scan_thread (gpointer data)
 
           errors = 0;
           post (self, w->gen, EV_SCAN, FALSE, scan, NULL);
-          /* Il core ha gia' armato il sollevamento (FDT up). Se il sensore
-           * non lo segnala entro il timeout, il dito si considera sollevato. */
+          /* The core has already armed lift detection (FDT up). If the sensor
+           * does not report it within the timeout, the finger counts as lifted. */
           up = gx_wait_finger_up (gx, FINGER_UP_TIMEOUT);
           if (up != 0 && up != -4)
             post (self, w->gen, EV_FINGER, FALSE, NULL, NULL);
@@ -357,8 +357,8 @@ scan_thread (gpointer data)
 
       if (r == -3)
         {
-          /* Errore di canale: spesso passa (il core riallaccia il TLS alla
-           * prossima acquisizione), ma non all'infinito. */
+          /* Channel error: it often goes away (the core reconnects TLS on the
+           * next capture), but not forever. */
           if (++errors >= MAX_TRANSPORT_ERRORS || gx->usb_devh == NULL)
             {
               post (self, w->gen, EV_LOST, FALSE, NULL,
@@ -368,7 +368,7 @@ scan_thread (gpointer data)
             }
           g_usleep (200 * 1000);
         }
-      /* -2: nessun dito entro il timeout del core, si riarma */
+      /* -2: no finger within the core's timeout, re-arm */
     }
   gx_capture_set_event_cb (gx, NULL, NULL);
   g_free (img16);
@@ -380,8 +380,8 @@ gxd_sensor_scan_start (GxdSensor *self)
 {
   Worker *w;
 
-  /* Un solo thread alla volta sul dispositivo: la scansione precedente
-   * deve essere completamente ferma (scan_stop completato). */
+  /* Only one thread at a time on the device: the previous scan must be
+   * fully stopped (scan_stop completed). */
   g_return_if_fail (self->open && self->worker == NULL && self->stopping == 0);
 
   w = g_new0 (Worker, 1);
@@ -427,7 +427,7 @@ gxd_sensor_scan_stop (GxdSensor *self, GAsyncReadyCallback callback, gpointer us
   g_autoptr(GTask) inner = NULL;
   Worker *worker = g_steal_pointer (&self->worker);
 
-  /* Da qui in poi gli eventi della scansione vengono scartati. */
+  /* From here on the scan's events are discarded. */
   self->scanning = FALSE;
   self->gen++;
   if (!worker)
@@ -450,7 +450,7 @@ gxd_sensor_scan_stop_finish (GxdSensor *self, GAsyncResult *res)
   g_task_propagate_boolean (G_TASK (res), NULL);
 }
 
-/* ---- chiusura ---- */
+/* ---- closing ---- */
 
 static void
 close_thread (GTask *task, gpointer source, gpointer task_data, GCancellable *cancellable)
@@ -509,7 +509,7 @@ gxd_sensor_shutdown (GxdSensor *self)
       g_thread_join (w->thread);
       g_free (w);
     }
-  /* eventuali join asincroni ancora in corso finiscono a breve */
+  /* any asynchronous joins still running finish shortly */
   while (self->stopping > 0)
     g_main_context_iteration (self->ctx, TRUE);
   if (self->gx)

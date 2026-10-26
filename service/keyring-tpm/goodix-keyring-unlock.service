@@ -1,18 +1,18 @@
 [Unit]
-Description=Sblocco keyring GNOME via TPM (PCR 7)
-# Prima della sessione grafica: shell e app trovano il keyring gia' aperto e non
-# compare nessun prompt all'avvio. Costa ~1s di TPM prima del desktop.
+Description=GNOME keyring unlock via TPM (PCR 7)
+# Before the graphical session: the shell and the apps find the keyring already
+# open and no prompt appears at startup. Costs ~1s of TPM work before the desktop.
 Before=graphical-session-pre.target
-# Lo sblocco vive solo nella memoria del daemon: se riparte (crash ->
-# Restart=on-failure) torna bloccato. WantedBy=gnome-keyring-daemon.service
-# fa rieseguire questo servizio a ogni avvio del daemon, After= lo accoda dopo.
+# The unlocked state lives only in the daemon's memory: if it restarts (crash ->
+# Restart=on-failure) it is locked again. WantedBy=gnome-keyring-daemon.service
+# runs this service again at every start of the daemon, After= queues it after.
 Wants=gnome-keyring-daemon.service
 After=gnome-keyring-daemon.service
 
 [Service]
 Type=oneshot
 ExecStart=%h/.local/share/goodixfp/keyring-unlock.sh
-# Tetto al ritardo del login se TPM o bus non rispondono.
+# Upper bound on the login delay if the TPM or the bus do not answer.
 TimeoutStartSec=15
 
 [Install]

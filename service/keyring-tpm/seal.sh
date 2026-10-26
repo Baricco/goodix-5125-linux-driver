@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Sigilla la password del keyring GNOME nel TPM (solo-TPM, legata a PCR 7).
-# Eseguibile via sudo: il file risultante viene assegnato all'utente reale.
-# La password viene letta a runtime e non viene mai stampata.
+# Seals the GNOME keyring password in the TPM (TPM only, bound to PCR 7).
+# Can be run through sudo: the resulting file is given to the real user.
+# The password is read at run time and never printed.
 set -euo pipefail
 
 TARGET_USER="${SUDO_USER:-$USER}"
@@ -9,21 +9,21 @@ TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
 CRED="$TARGET_HOME/.local/share/goodixfp/keyring-tpm.cred"
 mkdir -p "$(dirname "$CRED")"
 
-read -rsp "Password del keyring (= password di login): " PW; echo
+read -rsp "Keyring password (= login password): " PW; echo
 
-# -T = solo TPM (nessuna host key -> decifrabile da utente in gruppo tss),
-# legato allo stato di PCR 7 (Secure Boot). Richiede Secure Boot ATTIVO per
-# avere valore reale (altrimenti un live USB con SB off riproduce lo stesso PCR7).
+# -T = TPM only (no host key -> a user in the tss group can decrypt it),
+# bound to the state of PCR 7 (Secure Boot). Needs Secure Boot ENABLED to be
+# worth anything (otherwise a live USB with SB off reproduces the same PCR 7).
 printf '%s' "$PW" | systemd-creds encrypt -T --tpm2-pcrs=7 --name=gkr - "$CRED"
 chmod 600 "$CRED"
 chown "$TARGET_USER:$TARGET_USER" "$CRED" 2>/dev/null || true
 chown "$TARGET_USER:$TARGET_USER" "$(dirname "$CRED")" 2>/dev/null || true
 
-# Verifica roundtrip (non stampa la password).
+# Round-trip check (does not print the password).
 DEC="$(systemd-creds decrypt --name=gkr "$CRED" - 2>/dev/null || true)"
 if [ -n "$DEC" ] && [ "$DEC" = "$PW" ]; then
-  echo "OK: sigillo creato e verificato ($CRED)"
+  echo "OK: seal created and verified ($CRED)"
 else
-  echo "ERRORE: roundtrip fallito (controllare TPM/PCR7)"; exit 1
+  echo "ERROR: round trip failed (check the TPM/PCR 7)"; exit 1
 fi
 unset PW DEC

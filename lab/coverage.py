@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Qualita' di un frame e stima della sovrapposizione, per l'enroll guidato (GUI).
+"""Frame quality and overlap estimate, for guided enrollment (GUI).
 
-- frame_quality(): quanto un frame e' "impronta vera" e non bordo/sfondo. Usa il tensore di
-  struttura: le regioni di creste hanno gradiente localmente coerente e orientato; bordo e sfondo
-  sono piatti o incoerenti. Ritorna (q in 0..1, is_good). Serve a scartare al volo i tocchi
-  fuori-centro (es. i frame di bordo A_07/A_12/A_13).
-- estimate_offset(): roto-traslazione tra due frame dalle corrispondenze SIGFM, per piazzare il
-  nuovo tocco nel mosaico di copertura.
+- frame_quality(): how much a frame is "real fingerprint" rather than edge/background. Uses the
+  structure tensor: ridge regions have a locally coherent, oriented gradient; edge and background
+  are flat or incoherent. Returns (q in 0..1, is_good). Used to drop off-centre touches on the
+  fly (e.g. the edge frames A_07/A_12/A_13).
+- estimate_offset(): rotation plus translation between two frames from the SIGFM
+  correspondences, to place the new touch in the coverage mosaic.
 """
 
 import numpy as np
@@ -14,25 +14,25 @@ import cv2
 
 import sigfm
 
-STRENGTH_REF = 400.0    # |d| (p90) tipico di un tocco pieno: fondo scala per la barra di forza
-STRENGTH_MIN = 0.15     # sotto questa soglia il frame e' vuoto/fantasma (nessun dito) -> scarta
+STRENGTH_REF = 400.0    # typical |d| (p90) of a full touch: full scale for the strength bar
+STRENGTH_MIN = 0.15     # below this threshold the frame is empty/ghost (no finger) -> drop it
 
 
 def frame_quality(frame_u16, clear_u16):
-    """frame e clear grezzi (H,W uint16) -> (strength in 0..1, is_good).
+    """raw frame and clear frame (H,W uint16) -> (strength in 0..1, is_good).
 
-    strength = ampiezza del segnale dito, dal grezzo d = clear - frame (p90 di |d| normalizzato).
-    Serve a mostrare una barra di "forza del tocco" nella GUI e a scartare solo i frame vuoti
-    (nessun dito). La bonta' vera del match la decide l'engine di copertura (matchabilita' SIGFM);
-    i frame di bordo l'utente li vede a schermo e li salta."""
+    strength = amplitude of the finger signal, from the raw d = clear - frame (normalized p90 of |d|).
+    Used to show a "touch strength" bar in the GUI and to drop only the empty frames
+    (no finger). The real quality of a match is decided by the coverage engine (SIGFM
+    matchability); edge frames are visible to the user on screen, who skips them."""
     d = np.abs(clear_u16.astype(np.float32) - frame_u16.astype(np.float32))
     strength = float(np.clip(np.percentile(d, 90) / STRENGTH_REF, 0.0, 1.0))
     return strength, strength >= STRENGTH_MIN
 
 
 def estimate_affine(feats_ref, feats_new):
-    """Roto-traslazione (2x3) che porta i punti di feats_new nel sistema di feats_ref, dalle
-    corrispondenze SIGFM. -> (ok, M 2x3, n_inlier). M mappa new->ref."""
+    """Rotation plus translation (2x3) taking the points of feats_new into the frame of feats_ref,
+    from the SIGFM correspondences. -> (ok, M 2x3, n_inlier). M maps new->ref."""
     pts_r, desc_r = feats_ref
     pts_n, desc_n = feats_new
     P_ref, P_new = sigfm._good_matches(desc_n, pts_n, desc_r, pts_r)  # new->ref
@@ -47,7 +47,7 @@ def estimate_affine(feats_ref, feats_new):
 
 
 def estimate_offset(feats_ref, feats_new):
-    """Come estimate_affine ma decomposto -> (ok, dx, dy, deg, n_inlier). Per diagnostica/mosaico."""
+    """Like estimate_affine but decomposed -> (ok, dx, dy, deg, n_inlier). For diagnostics/mosaic."""
     ok, M, inl = estimate_affine(feats_ref, feats_new)
     if not ok:
         return False, 0.0, 0.0, 0.0, inl

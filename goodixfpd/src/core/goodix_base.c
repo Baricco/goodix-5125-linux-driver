@@ -1,24 +1,28 @@
-/* goodix_base.c - FDT 基线持久化与学习（goodix.dat 基线机制）
+/* goodix_base.c - FDT baseline persistence and learning (goodix.dat baseline
+ * mechanism)
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
- * 基线相关逻辑：
- *   - 基线文件加载（init 末尾）：加载 goodix.dat，CRC 校验 +
- *     OTP 逐字节绑定，匹配才采用。
- *   - 基线落盘：基线更新后写回文件。
- *   - 文件基线 -> FDT-down 阈值表。
- *   - 设备回传基线的合法性检查。
- *   - 从 FDT IRQ 推送的原始数据计算 down/up 阈值表。
+ * Baseline logic:
+ *   - loading the baseline file (end of init): loads goodix.dat, CRC check +
+ *     byte-by-byte OTP binding, used only if it matches.
+ *   - saving the baseline: writes the file back after the baseline changes.
+ *   - file baseline -> FDT-down threshold table.
+ *   - validity check of baselines sent back by the device.
+ *   - computing the down/up threshold tables from the raw data pushed with
+ *     FDT IRQs.
  *
- * 文件布局（type 12 ChicagoHS）：
+ * File layout (type 12 ChicagoHS):
  *   [OTP 64B][fdt_base 12B][navbase 3200B][imagebase 10240B][CRC32 4B LE]
- *   （OTP 段长度 = 64，不是读出缓冲的 256）
- * CRC = CRC-32/MPEG-2（poly 0x04C11DB7，初值 0xFFFFFFFF，无最终异或，
- * 查表实现，种子初值 = -1）。
+ *   (the OTP section is 64 bytes, not the 256 of the read buffer)
+ * CRC = CRC-32/MPEG-2 (poly 0x04C11DB7, initial value 0xFFFFFFFF, no final
+ * XOR, table driven, seed = -1).
  *
- * 说明：navbase(3200B) 来自初始化时基线采样流程的
- * 导航基线采样，仅用于导航事件（本驱动不做导航，保留字段写 0）；
- * imagebase(10240B) 是同一流程采的无手指图像基线，加载后作为主机侧
- * 手指判别（FDT 判别）的比较基准，本驱动如实持久化。
+ * Notes: navbase (3200 B) comes from the navigation baseline sampling of the
+ * init-time baseline sampling flow and is used only for navigation events
+ * (this driver does no navigation, the field is written as 0); imagebase
+ * (10240 B) is the no-finger image baseline sampled by the same flow, used
+ * after loading as the reference for host-side finger detection (FDT
+ * decision), and persisted faithfully by this driver.
  */
 #include <string.h>
 #include <stdio.h>
@@ -29,13 +33,14 @@
 #include <sys/stat.h>
 #include "goodix.h"
 
-#define BASE_FDT_LEN   12                   /* FDT 表长度（type 12） */
-#define BASE_NAV_LEN   3200                 /* 导航基线长度（type 12） */
-#define BASE_IMG_LEN   10240                /* 图像基线长度（type 12） */
+#define BASE_FDT_LEN   12                   /* FDT table length (type 12) */
+#define BASE_NAV_LEN   3200                 /* navigation baseline length (type 12) */
+#define BASE_IMG_LEN   10240                /* image baseline length (type 12) */
 #define BASE_TAIL_LEN  (BASE_FDT_LEN + BASE_NAV_LEN + BASE_IMG_LEN + 4)
 
-/* CRC-32/MPEG-2（poly 0x04C11DB7，初值 0xFFFFFFFF，无最终异或）的查表
- * 实现见 goodix_crc.c，与图像线 CRC / 固件 CRC 共用。 */
+/* The table-driven CRC-32/MPEG-2 (poly 0x04C11DB7, initial value
+ * 0xFFFFFFFF, no final XOR) is in goodix_crc.c, shared with the image line
+ * CRC and the firmware CRC. */
 
 const char *gx_state_dir(void)
 {
@@ -76,7 +81,7 @@ static const char *base_store_path(void)
     return path;
 }
 
-/* 基线合法性检查：每个 u16 的 (v>>1)&0xFF 不能为 0 或 0xFF */
+/* baseline validity check: (v>>1)&0xFF of every u16 must not be 0 or 0xFF */
 int gx_fdt_base_check(const uint8_t raw[12])
 {
     for (int i = 0; i < 12; i += 2) {
@@ -90,7 +95,8 @@ int gx_fdt_base_check(const uint8_t raw[12])
     return 1;
 }
 
-/* down 阈值表学习：fdt-up IRQ 的原始基线 -> down 阈值表
+/* down threshold table learning: raw baseline of the fdt-up IRQ -> down
+ * threshold table
  * table[i] = ((raw16[i] >> 1) << 8) | 0x80 */
 int gx_fdt_learn_down_base(struct goodix_dev *d, const uint8_t raw[12])
 {
@@ -107,10 +113,11 @@ int gx_fdt_learn_down_base(struct goodix_dev *d, const uint8_t raw[12])
     return 0;
 }
 
-/* up 阈值表学习：
- * table[i] = ((raw16[i]>>1) + delta) << 8 | 0x80，
- * touchflag 第 i 位为 0 的槽位强制 ((delta-2)<<8)|0x80（delta=21 时即 4992）。
- * delta 来自 OTP 解析（d->fdt_delta，默认 21）。 */
+/* up threshold table learning:
+ * table[i] = ((raw16[i]>>1) + delta) << 8 | 0x80,
+ * slots whose touchflag bit i is 0 are forced to ((delta-2)<<8)|0x80
+ * (4992 with delta=21).
+ * delta comes from OTP parsing (d->fdt_delta, default 21). */
 int gx_fdt_learn_up_base(struct goodix_dev *d, const uint8_t raw[12],
                          uint16_t touchflag)
 {
@@ -134,8 +141,9 @@ int gx_fdt_learn_up_base(struct goodix_dev *d, const uint8_t raw[12],
     return 0;
 }
 
-/* 基线文件加载路径：
- * 读文件 -> CRC 校验 -> OTP 绑定 -> 取出 12B FDT 阈值表。 */
+/* Baseline file loading:
+ * read the file -> CRC check -> OTP binding -> take the 12 B FDT threshold
+ * table. */
 int gx_base_load(struct goodix_dev *d)
 {
     uint8_t buf[256 + BASE_TAIL_LEN];
@@ -149,7 +157,7 @@ int gx_base_load(struct goodix_dev *d)
     want = d->otp_len + BASE_TAIL_LEN;
     f = fopen(path, "rb");
     if (!f)
-        return -1;                        /* 无基线文件：走采样 */
+        return -1;                        /* no baseline file: sample instead */
     got = fread(buf, 1, sizeof(buf), f);
     fclose(f);
     if (got != want) {
@@ -170,10 +178,12 @@ int gx_base_load(struct goodix_dev *d)
         return -4;
     }
     memcpy(d->fdt_down_base, buf + d->otp_len, BASE_FDT_LEN);
-    /* 文件里的表必须是合法阈值：落盘格式为"高字节=阈值、低字节=0x80"
-     * （见 gx_fdt_learn_down_base / learn_up_base）。此前注释声称"使用文件
-     * 前同样做合法性检查"但实际缺失——补上：阈值字节为 0/0xFF 即视为
-     * 垃圾表（全零存档/损坏/格式不兼容），拒绝采用，走重新采样。 */
+    /* The table in the file must hold valid thresholds: the stored format is
+     * "high byte = threshold, low byte = 0x80" (see gx_fdt_learn_down_base /
+     * learn_up_base). An older comment claimed "the same validity check is
+     * done before using the file", but it was missing - added here: a
+     * threshold byte of 0/0xFF means a garbage table (all-zero file /
+     * corruption / incompatible format), which is refused and resampled. */
     for (int i = 0; i < BASE_FDT_LEN; i += 2) {
         uint8_t hi = d->fdt_down_base[i + 1];
         if (hi == 0 || hi == 0xFF) {
@@ -182,11 +192,13 @@ int gx_base_load(struct goodix_dev *d)
             return -5;
         }
     }
-    /* imagebase 段（offset = otp + 12 + 3200）：主机侧手指判别的
-     * 无手指基线图像（装入全局基线图供判别使用）。
-     * type 12 固定 10240B。
-     * 全 0 段视为无效（旧版本存档只写 FDT 表，imagebase 段是占位 0，
-     * 采用它会让判别把一切帧当成 finger）。 */
+    /* imagebase section (offset = otp + 12 + 3200): the no-finger baseline
+     * image for host-side finger detection (loaded into the global baseline
+     * image used for the decision).
+     * Fixed 10240 B for type 12.
+     * An all-zero section counts as invalid (older files stored only the
+     * FDT table and the imagebase section was a placeholder of zeros; using
+     * it would make the decision treat every frame as a finger). */
     if (d->img_size == BASE_IMG_LEN) {
         const uint8_t *ib = buf + d->otp_len + BASE_FDT_LEN + BASE_NAV_LEN;
         int nonzero = 0;
@@ -200,15 +212,16 @@ int gx_base_load(struct goodix_dev *d)
             d->img_base_valid = true;
         }
     }
-    /* （FDT 表合法性检查已在上方完成） */
+    /* (the FDT table validity check was done above) */
     d->base_valid = true;
     LOG("FDT base loaded from %s (CRC+OTP ok%s)", path,
         d->img_base_valid ? ", imagebase ok" : "");
     return 0;
 }
 
-/* 基线落盘：布局固定；
- * navbase 段写 0（不做导航采样），imagebase 段写真实无手指基线图像。 */
+/* Saving the baseline: fixed layout;
+ * the navbase section is written as 0 (no navigation sampling), the
+ * imagebase section with the real no-finger baseline image. */
 int gx_base_save(struct goodix_dev *d)
 {
     uint8_t buf[256 + BASE_TAIL_LEN];
@@ -217,13 +230,15 @@ int gx_base_save(struct goodix_dev *d)
     FILE *f;
 
     if (!d->otp_len)
-        return -1;                        /* 没有 OTP 不建档 */
+        return -1;                        /* no file without OTP */
     total = d->otp_len + BASE_TAIL_LEN;
     memset(buf, 0, sizeof(buf));
     memcpy(buf, d->otp, d->otp_len);
     memcpy(buf + d->otp_len, d->fdt_down_base, BASE_FDT_LEN);
-    /* imagebase 段：有基线图像写真实数据，否则保持 0（未采到基线时
-     * 参考实现也不会建档——由调用方保证 img_base_valid 时再调）。 */
+    /* imagebase section: real data when there is a baseline image, otherwise
+     * left at 0 (without a sampled baseline the reference implementation
+     * creates no file either - the caller only calls this when
+     * img_base_valid). */
     if (d->img_base_valid && d->img_size == BASE_IMG_LEN)
         memcpy(buf + d->otp_len + BASE_FDT_LEN + BASE_NAV_LEN,
                d->img_base, BASE_IMG_LEN);

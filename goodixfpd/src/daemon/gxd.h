@@ -1,10 +1,10 @@
-/* gxd.h - goodixfpd: servizio compatibile con l'API D-Bus di fprintd per il
- * lettore Goodix 27c6:5125/5135.
+/* gxd.h - goodixfpd: a service compatible with fprintd's D-Bus API for the
+ * Goodix 27c6:5125/5135 reader.
  *
- * pam_fprintd, i comandi fprintd-*, GNOME/KDE e la GUI del progetto parlano
- * con net.reactivated.Fprint: questo servizio ne implementa lo stesso
- * contratto (metodi, segnali, errori, controlli polkit) sopra il core del
- * sensore, senza modificare libfprint ne' fprintd.
+ * pam_fprintd, the fprintd-* commands, GNOME/KDE and the project's GUI talk to
+ * net.reactivated.Fprint: this service implements the same contract (methods,
+ * signals, errors, polkit checks) on top of the sensor core, without
+ * modifying libfprint or fprintd.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -17,11 +17,11 @@
 #define GXD_SERVICE_NAME  "net.reactivated.Fprint"
 #define GXD_SERVICE_PATH  "/net/reactivated/Fprint"
 #define GXD_DEVICE_PATH   GXD_SERVICE_PATH "/Device/0"
-/* Nome con cui il dispositivo si presentava con libfprint: pam_fprintd lo
- * usa nei messaggi ("Place your finger on ..."). */
+/* Name the device had with libfprint: pam_fprintd uses it in its messages
+ * ("Place your finger on ..."). */
 #define GXD_DEVICE_NAME   "Goodix fingerprint (27c6:5125/5135)"
 
-/* Errori D-Bus: stessi nomi e significati di fprintd. */
+/* D-Bus errors: same names and meanings as fprintd. */
 #define GXD_ERROR (gxd_error_quark ())
 GQuark gxd_error_quark (void);
 
@@ -39,14 +39,14 @@ typedef enum {
   GXD_ERROR_PRINTS_NOT_DELETED_FROM_DEVICE,
 } GxdError;
 
-/* Dita: stessa numerazione di FpFinger in libfprint. */
+/* Fingers: same numbering as FpFinger in libfprint. */
 #define GXD_FINGER_UNKNOWN  0
 #define GXD_FINGER_FIRST    1
 #define GXD_FINGER_LAST     10
 
 const char *gxd_finger_to_name (int finger);      /* 0 -> "any" */
-int         gxd_finger_from_name (const char *name); /* sconosciuto -> 0 */
+int         gxd_finger_from_name (const char *name); /* unknown -> 0 */
 
-/* Directory dei dati (StateDirectory=fprint di fprintd.service). */
+/* Data directory (StateDirectory=fprint of fprintd.service). */
 const char *gxd_state_dir (void);
 void        gxd_set_state_dir (const char *dir);

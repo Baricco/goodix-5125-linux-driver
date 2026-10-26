@@ -1,9 +1,9 @@
-# goodixfpd: risponde al posto di fprintd per il lettore Goodix 27c6:5125/5135.
-# Stesso servizio, stessa interfaccia D-Bus, stessa protezione di
-# fprintd.service; se il lettore non c'e', goodixfpd avvia il vero fprintd.
-# Variabili utili (drop-in aggiuntivo con Environment=):
-#   GOODIX_LEARN=0    non far crescere le impronte durante l'uso
-#   GOODIX_MIN_RIDGE  contrasto minimo dei tocchi (default 10)
+# goodixfpd: answers instead of fprintd for the Goodix 27c6:5125/5135 reader.
+# Same service, same D-Bus interface, same protection as fprintd.service;
+# if the reader is not present, goodixfpd starts the real fprintd.
+# Useful variables (an additional drop-in with Environment=):
+#   GOODIX_LEARN=0    do not let fingerprints grow with use
+#   GOODIX_MIN_RIDGE  minimum contrast of touches (default 10)
 [Service]
 ExecStart=
 ExecStart=@libexecdir@/goodixfpd

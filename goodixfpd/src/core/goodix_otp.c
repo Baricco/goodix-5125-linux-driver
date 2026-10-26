@@ -1,34 +1,37 @@
-/* goodix_otp.c - OTP 解析 + 224B 配置表补丁。
+/* goodix_otp.c - OTP parsing + 224 B configuration table patching.
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
- * 背景：
- *   初始化顺序是 读OTP -> OTP解析 -> FDT 初始化 -> 配置下发。
- *   OTP 解析会用 OTP 里的工厂校准值现场修改 224B 配置表里的
- *   若干寄存器项，然后配置下发把改过的表发给 MCU。
- *   不补丁直接发静态表 = FDT 阈值/曝光参数全是通用默认值，
- *   手指检测不触发（这是 --capture 布防后无 FDT 事件的根因之一）。
+ * Background:
+ *   The init order is: read OTP -> parse OTP -> FDT init -> download config.
+ *   OTP parsing uses the factory calibration values in the OTP to modify a
+ *   few register entries of the 224 B configuration table on the spot, then
+ *   the config download sends the modified table to the MCU.
+ *   Sending the static table without the patch = FDT thresholds and exposure
+ *   parameters all at generic defaults, and finger detection never fires
+ *   (one of the root causes of no FDT event after arming with --capture).
  *
- *   补丁项（type 12 ChicagoHS, chipid 0x2503/0x2504）：
- *     reg 0x220 <- (16*dac0)|8     section 0, 全写   (OTP DAC)
- *     reg 0x236 <- dac1            section 0, 全写
- *     reg 0x238 <- dac2            section 0, 全写
- *     reg 0x23A <- dac3            section 0, 全写
- *     reg 0x5C  <- tcode           section 0, 全写   (OTP tcode)
- *     reg 0x82  <- delta<<8        section 2, 只写高字节 (FDT delta)
- *     reg 0x56  <- fdtOffset+4     section 2, 只写低字节 (仅 offset!=0)
+ *   Patched entries (type 12 ChicagoHS, chipid 0x2503/0x2504):
+ *     reg 0x220 <- (16*dac0)|8     section 0, full write  (OTP DAC)
+ *     reg 0x236 <- dac1            section 0, full write
+ *     reg 0x238 <- dac2            section 0, full write
+ *     reg 0x23A <- dac3            section 0, full write
+ *     reg 0x5C  <- tcode           section 0, full write  (OTP tcode)
+ *     reg 0x82  <- delta<<8        section 2, high byte only (FDT delta)
+ *     reg 0x56  <- fdtOffset+4     section 2, low byte only (only if offset != 0)
  *
- * 配置表结构：
- *   header: section s 的表项区偏移/字节数 = cfg[2s+1], cfg[2s+2]
- *   表项: [reg16 LE][val16 LE]，步进 4；命中即改并重写 16 位校验和
- *   校验和: u16 cks = -(0xA5A5 + sum(u16[0..110]))，
- *   存在 word[111]（byte 222..223，LE）。
+ * Configuration table layout:
+ *   header: offset/size of the entry area of section s = cfg[2s+1], cfg[2s+2]
+ *   entries: [reg16 LE][val16 LE], stride 4; on a hit the value is changed
+ *            and the 16-bit checksum rewritten
+ *   checksum: u16 cks = -(0xA5A5 + sum(u16[0..110])),
+ *   stored in word[111] (bytes 222..223, LE).
  */
 #include <string.h>
 #include "goodix.h"
 
 /* ---------------- CRC-8 ----------------
- * CRC-8/SMBUS（poly 0x07，初值 0，MSB-first），
- * 返回时再按位取反（return ~i）。直接按位算，不搬表。 */
+ * CRC-8/SMBUS (poly 0x07, initial value 0, MSB first), bitwise inverted on
+ * return (return ~i). Computed bit by bit, no table. */
 static uint8_t gf_crc8(const uint8_t *data, int len)
 {
     uint8_t crc = 0;
@@ -41,7 +44,7 @@ static uint8_t gf_crc8(const uint8_t *data, int len)
     return (uint8_t)~crc;
 }
 
-/* ---------------- 配置表 16 位校验和 ---------------- */
+/* ---------------- 16-bit checksum of the configuration table ---------------- */
 static void gf_config_fix_checksum(uint8_t *cfg)
 {
     int16_t v = (int16_t)0xA5A5;            /* -23131 */
@@ -52,10 +55,11 @@ static void gf_config_fix_checksum(uint8_t *cfg)
     cfg[223] = (uint8_t)(cks >> 8);
 }
 
-/* ---------------- 修改配置表 ----------------
- * cfg: 224B 配置表；reg: 目标寄存器；val: 新值；
- * section: 0..7（选择 header 里的表项区）；mode: 0=全写 1=只写低字节 2=只写高字节。
- * 返回 1 = 命中并修改。 */
+/* ---------------- modify the configuration table ----------------
+ * cfg: 224 B configuration table; reg: target register; val: new value;
+ * section: 0..7 (selects the entry area in the header); mode: 0 = full write,
+ * 1 = low byte only, 2 = high byte only.
+ * Returns 1 = found and modified. */
 static int gf_modify_config(uint8_t *cfg, uint16_t reg, uint16_t val,
                             int section, int mode)
 {
@@ -63,8 +67,9 @@ static int gf_modify_config(uint8_t *cfg, uint16_t reg, uint16_t val,
         return 0;
     uint8_t off = cfg[2 * section + 1];
     uint8_t cnt = cfg[2 * section + 2];
-    /* 防御：表项区必须落在 224B 配置表内且按 4B 步进。当前 4 张静态表
-     * 均已验证合法，此检查防止未来新增表写错时越界读。 */
+    /* Defensive: the entry area must lie inside the 224 B table with a 4 B
+     * stride. The 4 current static tables are all verified as valid; this
+     * check prevents out-of-bounds reads if a future table is wrong. */
     if (cnt % 4 != 0 || (uint16_t)off + cnt > 224)
         return 0;
     for (int i = 0; i < cnt; i += 4) {
@@ -88,11 +93,12 @@ static int gf_modify_config(uint8_t *cfg, uint16_t reg, uint16_t val,
     return 0;
 }
 
-/* ---------------- OTP CRC 分组校验 ----------------
+/* ---------------- OTP CRC group checks ----------------
  * cp: OTP[0..10] + OTP[36..39]        -> OTP[60]
  * ft: OTP[11..19] + OTP[28] + OTP[50..53] + OTP[56..59] + OTP[62] -> OTP[61]
  * mt: OTP[20..27] + OTP[29..35] + OTP[40..49] + OTP[54..55]       -> OTP[63]
- * 参考实现里 CRC 失败只记日志，不阻断（DAC 检查才是解析门禁）。 */
+ * In the reference implementation a CRC failure is only logged, it does not
+ * block (the DAC check is the real gate of the parsing). */
 static void gf_otp_crc_groups(const uint8_t *otp, int *cp_ok, int *ft_ok,
                               int *mt_ok)
 {
@@ -121,13 +127,14 @@ static void gf_otp_crc_groups(const uint8_t *otp, int *cp_ok, int *ft_ok,
     LOG("OTP CRC: cp=%d ft=%d mt=%d", *cp_ok, *ft_ok, *mt_ok);
 }
 
-/* ---------------- OTP DAC 提取 ----------------
- * ft dac = OTP[50..53]（自带 CRC8 -> OTP[62]），mt dac = OTP[46..49]
- *（CRC8 -> OTP[22]）。选择顺序与参考实现一致：
- *   ft 组有效（组 CRC 或自 CRC）-> 用 ft；
- *   mt 有效 -> 用 mt；
- *   否则逐位多数表决（>=3 位一致才行；3 位一致时不一致位取其余三位均值）。
- * 返回 1 = dac[4] 有效（这是 OTP 解析的总门禁）。 */
+/* ---------------- OTP DAC extraction ----------------
+ * ft dac = OTP[50..53] (own CRC8 -> OTP[62]), mt dac = OTP[46..49]
+ * (CRC8 -> OTP[22]). Same selection order as the reference implementation:
+ *   ft group valid (group CRC or own CRC) -> use ft;
+ *   mt valid -> use mt;
+ *   otherwise a per-byte majority vote (needs >= 3 agreeing bytes; with 3 in
+ *   agreement the disagreeing byte takes the mean of the other three).
+ * Returns 1 = dac[4] valid (this is the overall gate of OTP parsing). */
 static int gf_otp_dac_extract(const uint8_t *otp, int ft_grp, int mt_grp,
                               uint8_t dac[4])
 {
@@ -171,11 +178,13 @@ static int gf_otp_dac_extract(const uint8_t *otp, int ft_grp, int mt_grp,
     return 1;
 }
 
-/* ---------------- OTP 解析主入口 ----------------
- * 合并自 OTP 检查与 OTP 解析两段流程：解析 OTP，现场补丁 224B 配置表。
- * 同时输出 FDT delta（fdt-up 基线学习要用；默认 21）。
- * 返回 1 = OTP 有效且补丁完成；0 = OTP 无效（参考实现此时不下任何补丁，
- * 保留静态表，delta/tcode 用默认 21/128）。 */
+/* ---------------- main OTP parsing entry point ----------------
+ * Merges the OTP check and OTP parsing steps: parses the OTP and patches the
+ * 224 B configuration table on the spot. Also outputs the FDT delta (needed
+ * to learn the fdt-up baseline; default 21).
+ * Returns 1 = OTP valid and patch done; 0 = OTP invalid (the reference
+ * implementation then applies no patch, keeps the static table and uses the
+ * default delta/tcode 21/128). */
 int gx_otp_patch_config(struct goodix_dev *d, uint8_t *cfg, uint8_t *delta_out)
 {
     const uint8_t *otp = d->otp;
@@ -185,8 +194,8 @@ int gx_otp_patch_config(struct goodix_dev *d, uint8_t *cfg, uint8_t *delta_out)
     uint16_t tcode = 128;
     uint8_t delta = 21;
 
-    *delta_out = 21;                 /* 默认 fdt delta */
-    d->fdt_tcode = 128;              /* 默认 tcode 初值 */
+    *delta_out = 21;                 /* default fdt delta */
+    d->fdt_tcode = 128;              /* default initial tcode */
 
     if (d->otp_len < 64) {
         LOG("OTP too short (%u), skip config patch", d->otp_len);
@@ -202,13 +211,13 @@ int gx_otp_patch_config(struct goodix_dev *d, uint8_t *cfg, uint8_t *delta_out)
     }
     LOG("OTP dac 0x%02x 0x%02x 0x%02x 0x%02x", dac[0], dac[1], dac[2], dac[3]);
 
-    /* DAC -> 曝光寄存器（section 0 全写） */
+    /* DAC -> exposure registers (section 0, full write) */
     gf_modify_config(cfg, 0x220, (uint16_t)((16 * dac[0]) | 8), 0, 0);
     gf_modify_config(cfg, 0x236, dac[1], 0, 0);
     gf_modify_config(cfg, 0x238, dac[2], 0, 0);
     gf_modify_config(cfg, 0x23A, dac[3], 0, 0);
 
-    /* tcode_diff：OTP[42]/[43]/[45] 三取一 */
+    /* tcode_diff: one of OTP[42]/[43]/[45] */
     if (otp[42] && otp[42] == (uint8_t)~otp[43])
         tcode_diff = otp[42];
     else if (otp[45] && otp[45] == (uint8_t)~otp[43])
@@ -228,9 +237,9 @@ int gx_otp_patch_config(struct goodix_dev *d, uint8_t *cfg, uint8_t *delta_out)
         gf_modify_config(cfg, 0x82, (uint16_t)(delta << 8), 2, 2);
         LOG("OTP tcode %u, fdt delta %u", tcode, delta);
     }
-    d->fdt_tcode = tcode;   /* 判别阈值 T=tcode*delta/8 要用 */
+    d->fdt_tcode = tcode;   /* needed for the decision threshold T=tcode*delta/8 */
 
-    /* fdtOffset：OTP[27]，仅 chipid 0x2503/0x2504（9475/9476） */
+    /* fdtOffset: OTP[27], only chipid 0x2503/0x2504 (9475/9476) */
     if (otp[27] && (d->chipid == 0x2504 || d->chipid == 0x2503)) {
         uint8_t b = otp[27], off;
         if ((b & 3) == ((b >> 4) & 3))

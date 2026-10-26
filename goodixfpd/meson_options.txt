@@ -1,6 +1,6 @@
 option('dataset', type: 'string', value: '',
-  description: 'Directory di acquisizioni reali (enroll/, genuine/, impostor/) per i test del matcher; vuoto = salta')
+  description: 'Directory of real captures (enroll/, genuine/, impostor/) for the matcher tests; empty = skip')
 option('systemd_dropin_dir', type: 'string', value: '',
-  description: 'Dove installare il drop-in di fprintd.service (default: <prefix>/lib/systemd/system/fprintd.service.d)')
+  description: 'Where to install the fprintd.service drop-in (default: <prefix>/lib/systemd/system/fprintd.service.d)')
 option('fprintd_path', type: 'string', value: '/usr/lib/fprintd',
-  description: 'Il fprintd da avviare quando il lettore Goodix non e\' collegato')
+  description: 'The fprintd to start when the Goodix reader is not connected')

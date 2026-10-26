@@ -1,45 +1,45 @@
 #!/usr/bin/env python3
-"""SIGFM ("SIFT Is Good For Matching") per il Goodix 27c6:5125.
+"""SIGFM ("SIFT Is Good For Matching") for the Goodix 27c6:5125.
 
-Port fedele del matcher di goodix-fp-linux-dev/sigfm (cpp/match.cpp, cpp/compute.cpp),
-pensato proprio per sensori 64x80. A differenza di un fit a omografia singola (RANSAC), qui la
-verifica geometrica e' un VOTO A COPPIE invariante a rotazione e scala:
+Faithful port of the matcher of goodix-fp-linux-dev/sigfm (cpp/match.cpp, cpp/compute.cpp),
+designed precisely for 64x80 sensors. Unlike a single-homography fit (RANSAC), here the
+geometric verification is PAIRWISE VOTING invariant to rotation and scale:
 
-  1. SIFT -> ratio test di Lowe (0.75) -> match tentativi (coppie di keypoint).
-  2. per ogni coppia di match, se la distanza tra i due keypoint e' conservata entro il 5%
-     (LENGTH_MATCH), si registra un "angolo" (codifica sin/cos della rotazione relativa).
-  3. per ogni coppia di angoli, se sin e cos coincidono entro il 5% (ANGLE_MATCH), +1 al punteggio.
+  1. SIFT -> Lowe's ratio test (0.75) -> tentative matches (pairs of keypoints).
+  2. for every pair of matches, if the distance between the two keypoints is preserved within 5%
+     (LENGTH_MATCH), an "angle" is recorded (sin/cos encoding of the relative rotation).
+  3. for every pair of angles, if sin and cos agree within 5% (ANGLE_MATCH), +1 to the score.
 
-Lo score e' il conteggio combinatorio di coppie mutuamente coerenti: cresce molto per lo stesso
-dito (centinaia-milioni) e resta bassissimo (0-pochi) per dita diverse. I cicli O(n^2) sono
-vettorizzati con numpy per restare veloci (<~decine di ms su 64x80).
+The score is the combinatorial count of mutually consistent pairs: it grows a lot for the same
+finger (hundreds to millions) and stays very low (0 to a few) for different fingers. The O(n^2)
+loops are vectorized with numpy to stay fast (<~tens of ms on 64x80).
 """
 
 import numpy as np
 import cv2
 
-# costanti identiche a cpp/match.cpp
-DISTANCE_MATCH = 0.75   # ratio test di Lowe
-LENGTH_MATCH = 0.05     # tolleranza sulla conservazione della distanza tra keypoint
-ANGLE_MATCH = 0.05      # tolleranza su sin/cos della rotazione relativa
-MIN_MATCH = 5           # match tentativi minimi per procedere
-EARLY_STOP = 2000       # per la verifica basta sapere se lo score supera la soglia: appena il
-                        # conteggio raggiunge questo valore ci si ferma (evita l'esplosione O(m^2)
-                        # sui frame quasi identici -> latenza uniforme). None = conteggio esatto.
+# constants identical to cpp/match.cpp
+DISTANCE_MATCH = 0.75   # Lowe's ratio test
+LENGTH_MATCH = 0.05     # tolerance on the preservation of the distance between keypoints
+ANGLE_MATCH = 0.05      # tolerance on sin/cos of the relative rotation
+MIN_MATCH = 5           # minimum tentative matches to go on
+EARLY_STOP = 2000       # for verification it is enough to know whether the score exceeds the threshold: as soon as
+                        # the count reaches this value it stops (avoids the O(m^2) explosion
+                        # on nearly identical frames -> uniform latency). None = exact count.
 
 _sift = cv2.SIFT_create()
 _bf = cv2.BFMatcher_create()
 
 
 def features(img_u8):
-    """img_u8: (H,W) uint8 gia' preprocessata -> (keypoints Nx2 float32, descriptors)."""
+    """img_u8: (H,W) uint8 already preprocessed -> (keypoints Nx2 float32, descriptors)."""
     kp, desc = _sift.detectAndCompute(img_u8, None)
     pts = np.array([k.pt for k in kp], dtype=np.float64) if kp else np.empty((0, 2))
     return pts, desc
 
 
 def _good_matches(desc_a, pts_a, desc_b, pts_b):
-    """ratio test -> (P1, P2): coppie di punti corrispondenti, deduplicate."""
+    """ratio test -> (P1, P2): pairs of corresponding points, deduplicated."""
     if desc_a is None or desc_b is None or len(desc_a) < MIN_MATCH or len(desc_b) < MIN_MATCH:
         return np.empty((0, 2)), np.empty((0, 2))
     pairs = _bf.knnMatch(desc_a, desc_b, k=2)
@@ -50,15 +50,15 @@ def _good_matches(desc_a, pts_a, desc_b, pts_b):
             p2.append(pts_b[pr[0].trainIdx])
     if len(p1) < MIN_MATCH:
         return np.array(p1), np.array(p2)
-    P1 = np.rint(np.array(p1)).astype(np.int64)   # cpp usa Point2i
+    P1 = np.rint(np.array(p1)).astype(np.int64)   # cpp uses Point2i
     P2 = np.rint(np.array(p2)).astype(np.int64)
-    # dedup come lo std::set del cpp (coppia (p1,p2) unica)
+    # dedup like the cpp's std::set (unique (p1,p2) pair)
     _, uniq = np.unique(np.hstack([P1, P2]), axis=0, return_index=True)
     return P1[np.sort(uniq)], P2[np.sort(uniq)]
 
 
 def match_score(fa, fb):
-    """Punteggio SIGFM tra due set di feature (pts, desc). Intero >= 0."""
+    """SIGFM score between two feature sets (pts, desc). Integer >= 0."""
     pts_a, desc_a = fa
     pts_b, desc_b = fb
     P1, P2 = _good_matches(desc_a, pts_a, desc_b, pts_b)
@@ -66,10 +66,10 @@ def match_score(fa, fb):
     if n < MIN_MATCH:
         return 0
 
-    # --- passo 2: angoli dalle coppie di match coerenti in lunghezza ---
+    # --- step 2: angles from the match pairs consistent in length ---
     j, k = np.triu_indices(n, k=1)
-    v1 = (P1[j] - P1[k]).astype(np.float64)   # vettore in immagine 1
-    v2 = (P2[j] - P2[k]).astype(np.float64)   # vettore in immagine 2
+    v1 = (P1[j] - P1[k]).astype(np.float64)   # vector in image 1
+    v2 = (P2[j] - P2[k]).astype(np.float64)   # vector in image 2
     len1 = np.hypot(v1[:, 0], v1[:, 1])
     len2 = np.hypot(v2[:, 0], v2[:, 1])
     product = len1 * len2
@@ -81,12 +81,12 @@ def match_score(fa, fb):
     v1, v2, product = v1[keep], v2[keep], product[keep]
     dot = v1[:, 0] * v2[:, 0] + v1[:, 1] * v2[:, 1]
     cross = v1[:, 0] * v2[:, 1] - v1[:, 1] * v2[:, 0]
-    sin_f = np.pi / 2 + np.arcsin(np.clip(dot / product, -1.0, 1.0))      # come cpp
+    sin_f = np.pi / 2 + np.arcsin(np.clip(dot / product, -1.0, 1.0))      # as in cpp
     cos_f = np.arccos(np.clip(cross / product, -1.0, 1.0))
 
-    # --- passo 3: conteggio coppie di angoli coerenti in rotazione ---
-    # per riga j si confronta l'angolo j con tutti i k>j (vettorizzato); con EARLY_STOP ci si
-    # ferma appena il conteggio e' abbastanza alto da superare qualunque soglia utile.
+    # --- step 3: count of angle pairs consistent in rotation ---
+    # for row j angle j is compared with every k>j (vectorized); with EARLY_STOP it
+    # stops as soon as the count is high enough to exceed any useful threshold.
     m = len(sin_f)
     count = 0
     for j in range(m - 1):

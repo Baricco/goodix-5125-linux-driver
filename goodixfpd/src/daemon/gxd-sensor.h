@@ -1,14 +1,14 @@
-/* gxd-sensor.h - il sensore visto dal servizio.
+/* gxd-sensor.h - the sensor as seen by the service.
  *
- * Il core e' bloccante: apertura e acquisizione girano in un thread di
- * lavoro, gli eventi arrivano nel contesto principale come segnali.
- * Tutte le funzioni vanno chiamate dal contesto principale.
+ * The core is blocking: opening and capture run in a worker thread, and
+ * events reach the main context as signals.
+ * All functions must be called from the main context.
  *
- * Segnali:
- *   "finger"  (gboolean present)   dito appoggiato/sollevato
- *   "scan"    (GxdScan *scan)      un tocco elaborato: frame o "riprova"
- *   "lost"    (GError *error)      sensore non piu' raggiungibile; la
- *                                  scansione si ferma da sola
+ * Signals:
+ *   "finger"  (gboolean present)   finger placed/lifted
+ *   "scan"    (GxdScan *scan)      a processed touch: frame or "retry"
+ *   "lost"    (GError *error)      sensor no longer reachable; the scan
+ *                                  stops by itself
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -22,8 +22,8 @@
 #define GXD_IMG_H 64
 
 typedef enum {
-  GXD_SCAN_FRAME,       /* immagine valida con almeno GXD_MIN_KEYPOINTS */
-  GXD_SCAN_RETRY,       /* tocco troppo debole/povero: va ripetuto */
+  GXD_SCAN_FRAME,       /* valid image with at least GXD_MIN_KEYPOINTS */
+  GXD_SCAN_RETRY,       /* touch too weak/poor: to be repeated */
 } GxdScanKind;
 
 typedef struct {
@@ -37,32 +37,32 @@ void gxd_scan_free (GxdScan *scan);
 #define GXD_TYPE_SENSOR (gxd_sensor_get_type ())
 G_DECLARE_FINAL_TYPE (GxdSensor, gxd_sensor, GXD, SENSOR, GObject)
 
-/* Il sensore USB, oppure (solo nel binario di test) il sensore simulato
- * comandato da un socket: vedi gxd-sensor-test.c. */
+/* The USB sensor or, only in the test binary, the simulated sensor driven
+ * through a socket: see gxd-sensor-test.c. */
 GxdSensor *gxd_sensor_new (void);
 
-/* TRUE se il lettore 27c6:5125/5135 e' collegato. */
+/* TRUE if the 27c6:5125/5135 reader is connected. */
 gboolean   gxd_sensor_present (void);
 
-/* Apertura completa (USB, PSK, TLS, baseline). Annullabile. */
+/* Full opening (USB, PSK, TLS, baseline). Cancellable. */
 void       gxd_sensor_open (GxdSensor *self, GCancellable *cancellable,
                             GAsyncReadyCallback callback, gpointer user_data);
 gboolean   gxd_sensor_open_finish (GxdSensor *self, GAsyncResult *res, GError **error);
 
-/* Chiusura: ferma l'eventuale scansione e rilascia il dispositivo. */
+/* Closing: stops any scan and releases the device. */
 void       gxd_sensor_close (GxdSensor *self, GAsyncReadyCallback callback,
                              gpointer user_data);
 void       gxd_sensor_close_finish (GxdSensor *self, GAsyncResult *res);
 
 gboolean   gxd_sensor_is_open (GxdSensor *self);
 
-/* Scansione continua: un evento "scan" per tocco, finche' non si ferma.
- * Dopo ogni tocco il thread aspetta che il dito si sollevi. */
+/* Continuous scan: one "scan" event per touch, until it is stopped.
+ * After every touch the thread waits for the finger to be lifted. */
 void       gxd_sensor_scan_start (GxdSensor *self);
 void       gxd_sensor_scan_stop (GxdSensor *self, GAsyncReadyCallback callback,
                                  gpointer user_data);
 void       gxd_sensor_scan_stop_finish (GxdSensor *self, GAsyncResult *res);
 gboolean   gxd_sensor_is_scanning (GxdSensor *self);
 
-/* Uscita del servizio: ferma la scansione e chiude, in modo sincrono. */
+/* Service exit: stops the scan and closes, synchronously. */
 void       gxd_sensor_shutdown (GxdSensor *self);

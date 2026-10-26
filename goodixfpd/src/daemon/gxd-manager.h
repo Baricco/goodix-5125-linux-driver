@@ -1,4 +1,4 @@
-/* gxd-manager.h - /net/reactivated/Fprint/Manager e l'ObjectManager.
+/* gxd-manager.h - /net/reactivated/Fprint/Manager and the ObjectManager.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */

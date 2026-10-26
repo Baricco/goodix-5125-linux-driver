@@ -5,6 +5,6 @@ Type = Package
 Target = *
 
 [Action]
-Description = Controllo che goodixfpd si carichi ancora...
+Description = Checking that goodixfpd still loads...
 When = PostTransaction
 Exec = /usr/share/goodixfpd/goodixfpd-check

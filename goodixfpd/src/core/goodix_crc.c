@@ -1,17 +1,18 @@
-/* goodix_crc.c - CRC-32/MPEG-2 共享实现
+/* goodix_crc.c - shared CRC-32/MPEG-2 implementation
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
- * 项目中三处（图像线 CRC、goodix.dat 基线 CRC、固件 CRC）使用的是同一个
- * 算法：CRC-32/MPEG-2（poly 0x04C11DB7，初值 0xFFFFFFFF，MSB-first，
- * 无最终异或）。此前三处各自实现了一份（逐位 / 查表 ×2），这里合并为
- * 单一查表实现，供三个模块共用。
+ * Three places in the project (image line CRC, goodix.dat baseline CRC,
+ * firmware CRC) use the same algorithm: CRC-32/MPEG-2 (poly 0x04C11DB7,
+ * initial value 0xFFFFFFFF, MSB first, no final XOR). Each used to have its
+ * own implementation (bitwise / table x2); they are merged here into a single
+ * table-driven implementation shared by the three modules.
  *
- * 注意：这是 MPEG-2 变体，不是 zlib/ISO 的 CRC-32（后者位序相反且有
- * 最终异或），不要用 zlib 的 crc32() 替代。
+ * Note: this is the MPEG-2 variant, not zlib/ISO CRC-32 (which has the
+ * opposite bit order and a final XOR); do not replace it with zlib's crc32().
  */
 #include <stdint.h>
 #include <stddef.h>
-#include "goodix.h"     /* gx_crc32_mpeg2 原型 */
+#include "goodix.h"     /* gx_crc32_mpeg2 prototype */
 
 static uint32_t crc_tab[256];
 static int crc_tab_ready = 0;
@@ -29,8 +30,9 @@ static void crc32_init_table(void)
     crc_tab_ready = 1;
 }
 
-/* 以 crc 为初值（通常 0xFFFFFFFFu）对 data 计算 CRC-32/MPEG-2，返回当前值。
- * 无最终异或：结果可直接与存储值比较。 */
+/* Computes CRC-32/MPEG-2 of data starting from crc (usually 0xFFFFFFFFu) and
+ * returns the current value. No final XOR: the result can be compared with
+ * the stored value directly. */
 uint32_t gx_crc32_mpeg2(const uint8_t *data, size_t len, uint32_t crc)
 {
     crc32_init_table();

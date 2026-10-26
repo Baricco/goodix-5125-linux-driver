@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Analisi offline di una sessione di calibrazione (calib_session.sh).
+"""Offline analysis of a calibration session (calib_session.sh).
 
-Ricostruisce ogni frame dai dump grezzi 16-bit con la pipeline C REALE del
-driver (imgproc_run) in piu' varianti, estrae SIGFM con il sigfm.cpp di
-produzione (libsigfm_prod.so) e simula enroll -> verify:
-  template  = frame della fase enroll che passano il gate di qualita'
-  genuini   = fase genuine, impostori = fase impostor (+ genuini specchiati:
-              stesso dito "inesistente", stress test del FAR)
-Per ogni variante stampa FRR/FAR alle varie soglie.
+Rebuilds every frame from the raw 16-bit dumps with the driver's REAL C
+pipeline (imgproc_run) in several variants, extracts SIGFM features with the
+production sigfm.cpp (libsigfm_prod.so) and simulates enroll -> verify:
+  template  = frames of the enroll phase that pass the quality gate
+  genuine   = genuine phase, impostors = impostor phase (+ mirrored genuine
+              frames: the same "non-existent" finger, a FAR stress test)
+For every variant it prints FRR/FAR at the various thresholds.
 
-Uso: tools/.venv/bin/python tools/fp_tune/analyze_session.py [captures/fp-dataset2]
+Usage: tools/.venv/bin/python tools/fp_tune/analyze_session.py [captures/fp-dataset2]
 """
 import ctypes, glob, os, re, subprocess, sys, tempfile
 import numpy as np
@@ -78,7 +78,7 @@ def load_phase(phase):
 
 
 def render(frames, env, tmp):
-    """Esegue imgproc_run su ogni frame -> (immagini 8-bit, segnali [dc, ridge])."""
+    """Runs imgproc_run on every frame -> (8-bit images, signals [dc, ridge])."""
     imgs, sig = [], []
     e = dict(os.environ, **env)
     for fr in frames:
@@ -118,9 +118,9 @@ def evaluate(S, imgs, sig, n_e, n_g, min_ridge, ratio):
 def main():
     data = {p: load_phase(p) for p in PHASES}
     for p in PHASES:
-        print(f'{p}: {len(data[p])} frame grezzi')
+        print(f'{p}: {len(data[p])} raw frames')
     if not all(data.values()):
-        sys.exit('dataset incompleto')
+        sys.exit('incomplete dataset')
     allfr = data['enroll'] + data['genuine'] + data['impostor']
     n_e, n_g = len(data['enroll']), len(data['genuine'])
     S = Sigfm()

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Esaltazione delle creste orientata (banco di filtri di Gabor) per immagini del 5125.
+"""Orientation-aware ridge enhancement (bank of Gabor filters) for 5125 images.
 
-Rende le feature piu' stabili tra pressioni diverse: stima l'orientamento locale delle creste
-e applica il filtro di Gabor allineato. Base per un matching robusto su sensore piccolo.
+Makes features more stable across different presses: it estimates the local ridge orientation
+and applies the matching Gabor filter. A basis for robust matching on a small sensor.
 """
 import numpy as np
 import cv2
@@ -14,14 +14,14 @@ def ridge_orientation(img, block=8):
     gxx = cv2.boxFilter(gx * gx, -1, (block, block))
     gyy = cv2.boxFilter(gy * gy, -1, (block, block))
     gxy = cv2.boxFilter(gx * gy, -1, (block, block))
-    return 0.5 * np.arctan2(2 * gxy, gxx - gyy)  # orientamento del gradiente
+    return 0.5 * np.arctan2(2 * gxy, gxx - gyy)  # gradient orientation
 
 
 def gabor_enhance(u8, wavelength=6.0):
     img = u8.astype(np.float32) / 255.0
-    orient = ridge_orientation(img) + np.pi / 2  # ruota sulle creste
+    orient = ridge_orientation(img) + np.pi / 2  # rotate onto the ridges
     out = np.zeros_like(img)
-    # banco su angoli discreti, seleziona per pixel l'angolo locale
+    # bank over discrete angles, pick the local angle per pixel
     angles = np.linspace(0, np.pi, 12, endpoint=False)
     responses = []
     for a in angles:

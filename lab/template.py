@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""Template multi-frame per il riconoscimento con SIGFM (Goodix 27c6:5125).
+"""Multi-frame template for recognition with SIGFM (Goodix 27c6:5125).
 
-Modello (quello giusto per sensori piccoli, vedi docs/matching.md):
-  - ENROLL per copertura: l'utente tocca N volte spostando il dito per coprire zone diverse.
-    Ogni frame viene preprocessato (CLAHE) e se ne estraggono le feature SIFT, salvate nel template.
-  - VERIFY: un tocco viene confrontato con TUTTI i frame del template; lo score e' il MAX.
-    Un dito genuino si sovrappone ad almeno un frame registrato (score enorme), un impostore a
-    nessuno (score ~0). La soglia separa i due regimi.
+Model (the right one for small sensors, see docs/matching.md):
+  - coverage ENROLL: the user touches N times moving the finger to cover different areas.
+    Every frame is preprocessed (CLAHE) and its SIFT features are extracted and saved in the template.
+  - VERIFY: a touch is compared with ALL template frames; the score is the MAX.
+    A genuine finger overlaps at least one enrolled frame (huge score), an impostor none
+    (score ~0). The threshold separates the two regimes.
 
-Le feature sono precalcolate in enroll: la verify costa una preprocessatura + N confronti SIGFM
-(ciascuno ~1-80 ms), quindi e' veloce anche con template ampi.
+Features are precomputed at enrollment: verification costs one preprocessing + N SIGFM
+comparisons (each ~1-80 ms), so it is fast even with large templates.
 
-Il template lavora sui *_plain.bin salvati dal driver, cosi' il matching e' testabile offline
-senza toccare l'hardware. Il frame clear (baseline) e' richiesto per il preprocessing.
+The template works on the *_plain.bin files saved by the driver, so matching can be tested offline
+without touching the hardware. The clear frame (baseline) is required for preprocessing.
 """
 
 import os
@@ -23,8 +23,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from preprocessor import decode, preprocess
 import sigfm
 
-# Soglia di accettazione (score SIGFM). Da tarare sul dataset reale di enroll per copertura;
-# con preprocessing CLAHE i genuini con overlap stanno nell'ordine 10^3-10^6, gli impostori < ~50.
+# Acceptance threshold (SIGFM score). To be tuned on the real coverage enrollment data set;
+# with CLAHE preprocessing genuine touches with overlap are in the 10^3-10^6 range, impostors < ~50.
 THRESHOLD = 300
 
 
@@ -33,33 +33,33 @@ def _frame(plain_path):
 
 
 def image_features(plain_path, clear_path):
-    """plain_path -> feature SIGFM dopo preprocessing CLAHE con baseline clear."""
+    """plain_path -> SIGFM features after CLAHE preprocessing with the clear baseline."""
     img = preprocess(_frame(plain_path), _frame(clear_path))
     return sigfm.features(img)
 
 
 def build_template(plain_paths, clear_path, out_path):
-    """Costruisce e salva un template .npz dalle catture di enroll."""
+    """Builds and saves an .npz template from the enrollment captures."""
     pts_list, desc_list, splits = [], [], []
     for p in plain_paths:
         pts, desc = image_features(p, clear_path)
         if desc is None or len(pts) < sigfm.MIN_MATCH:
-            print(f"  [skip] {os.path.basename(p)}: troppe poche feature ({len(pts)})")
+            print(f"  [skip] {os.path.basename(p)}: too few features ({len(pts)})")
             continue
         pts_list.append(pts.astype(np.float32))
         desc_list.append(desc.astype(np.float32))
         splits.append(len(pts))
-        print(f"  [ok]   {os.path.basename(p)}: {len(pts)} keypoint")
+        print(f"  [ok]   {os.path.basename(p)}: {len(pts)} keypoints")
     if not splits:
-        raise SystemError("nessun frame valido nel template")
+        raise SystemError("no valid frame in the template")
     np.savez_compressed(out_path,
                         pts=np.vstack(pts_list), desc=np.vstack(desc_list),
                         splits=np.array(splits, dtype=np.int32))
-    print(f"template salvato in {out_path} ({len(splits)} frame)")
+    print(f"template saved in {out_path} ({len(splits)} frames)")
 
 
 def load_template(path):
-    """-> lista di (pts, desc) per frame."""
+    """-> list of (pts, desc) per frame."""
     z = np.load(path)
     pts, desc, splits = z["pts"], z["desc"], z["splits"]
     frames, off = [], 0
@@ -70,7 +70,7 @@ def load_template(path):
 
 
 def verify(template_frames, probe_feats, threshold=THRESHOLD):
-    """-> (accettato, best_score). best_score = max SIGFM su tutti i frame del template."""
+    """-> (accepted, best_score). best_score = max SIGFM over all template frames."""
     best = 0
     for tf in template_frames:
         best = max(best, sigfm.match_score(tf, probe_feats))
@@ -79,16 +79,16 @@ def verify(template_frames, probe_feats, threshold=THRESHOLD):
 
 if __name__ == "__main__":
     import argparse
-    ap = argparse.ArgumentParser(description="Enroll/verify SIGFM da *_plain.bin")
-    ap.add_argument("--clear", required=True, help="frame baseline (clear-0_plain.bin)")
+    ap = argparse.ArgumentParser(description="SIGFM enroll/verify from *_plain.bin")
+    ap.add_argument("--clear", required=True, help="baseline frame (clear-0_plain.bin)")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    e = sub.add_parser("enroll", help="costruisci un template dalle catture")
+    e = sub.add_parser("enroll", help="build a template from the captures")
     e.add_argument("--out", required=True)
-    e.add_argument("plain", nargs="+", help="file *_plain.bin dei tocchi di enroll")
-    v = sub.add_parser("verify", help="verifica un tocco contro un template")
+    e.add_argument("plain", nargs="+", help="*_plain.bin files of the enrollment touches")
+    v = sub.add_parser("verify", help="verify a touch against a template")
     v.add_argument("--template", required=True)
     v.add_argument("--threshold", type=int, default=THRESHOLD)
-    v.add_argument("probe", help="file *_plain.bin del tocco da verificare")
+    v.add_argument("probe", help="*_plain.bin file of the touch to verify")
     args = ap.parse_args()
 
     if args.cmd == "enroll":
@@ -97,5 +97,5 @@ if __name__ == "__main__":
         frames = load_template(args.template)
         feats = image_features(args.probe, args.clear)
         ok, score = verify(frames, feats, args.threshold)
-        print(f"score={score}  soglia={args.threshold}  ->  {'ACCETTATO' if ok else 'RIFIUTATO'}")
+        print(f"score={score}  threshold={args.threshold}  ->  {'ACCEPTED' if ok else 'REJECTED'}")
         sys.exit(0 if ok else 1)

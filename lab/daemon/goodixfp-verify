@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Client PAM per goodixfpd. Chiede la verify dell'utente al demone e ritorna 0 (successo) / 1.
+"""PAM client for goodixfpd. Asks the daemon to verify the user and returns 0 (success) / 1.
 
-Pensato per pam_exec: l'utente arriva in PAM_USER. In alternativa si passa come argomento.
-NON stampa nulla di sensibile; un breve invito "Tocca il sensore" va su stderr.
+Meant for pam_exec: the user arrives in PAM_USER. Alternatively it is passed as an argument.
+It prints NOTHING sensitive; a short "Touch the sensor" prompt goes to stderr.
 
-Esce 0 solo se il demone risponde {"ok": true}. Qualunque errore/timeout -> 1 (PAM prosegue
-con la password grazie a 'sufficient'): il sensore non deve mai chiudere fuori l'utente.
+It exits 0 only if the daemon replies {"ok": true}. Any error/timeout -> 1 (PAM goes on with the
+password thanks to 'sufficient'): the sensor must never lock the user out.
 """
 import json
 import os
@@ -15,15 +15,15 @@ import time
 
 SOCKET_PATH = os.environ.get("GOODIXFP_SOCKET", "/run/goodixfpd/sock")
 TIMEOUT = float(os.environ.get("GOODIXFP_CLIENT_TIMEOUT", "12"))
-CONNECT_RETRY = float(os.environ.get("GOODIXFP_CONNECT_RETRY", "3"))  # il demone puo' star partendo
+CONNECT_RETRY = float(os.environ.get("GOODIXFP_CONNECT_RETRY", "3"))  # the daemon may be starting
 
 
 def main():
     user = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("PAM_USER", "")
     if not user:
         return 1
-    # Riprova la connessione per qualche secondo: all'avvio/boot il demone puo' non aver ancora
-    # fatto bind del socket (Type=simple). Se proprio non c'e', torna 1 -> fallback password.
+    # Retry the connection for a few seconds: at startup/boot the daemon may not have bound the
+    # socket yet (Type=simple). If it is really not there, return 1 -> password fallback.
     deadline = time.time() + CONNECT_RETRY
     s = None
     while True:
@@ -38,14 +38,14 @@ def main():
             if time.time() >= deadline:
                 return 1
             time.sleep(0.2)
-    # Sotto pam_exec lo stderr non arriva al terminale: scrivo l'invito su /dev/tty (il terminale
-    # di controllo), cosi' l'utente SA quando premere. Fallback a stderr se non c'e' tty.
+    # Under pam_exec stderr does not reach the terminal: the prompt is written to /dev/tty (the
+    # controlling terminal), so the user KNOWS when to press. Fallback to stderr without a tty.
     try:
         _tty = open("/dev/tty", "w")
     except OSError:
         _tty = sys.stderr
     try:
-        _tty.write("Appoggia il dito sul lettore (fermo e deciso)...\n")
+        _tty.write("Place your finger on the reader (still and firm)...\n")
         _tty.flush()
         s.sendall((json.dumps({"op": "verify", "user": user}) + "\n").encode())
         buf = b""
@@ -56,7 +56,7 @@ def main():
             buf += chunk
         res = json.loads(buf.split(b"\n", 1)[0].decode())
         if res.get("ok"):
-            _tty.write("  impronta riconosciuta.\n")
+            _tty.write("  fingerprint recognized.\n")
             _tty.flush()
             return 0
         if res.get("reason"):

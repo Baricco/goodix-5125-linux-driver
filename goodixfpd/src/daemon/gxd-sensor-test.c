@@ -1,14 +1,14 @@
-/* gxd-sensor-test.c - sensore simulato per i test d'integrazione.
+/* gxd-sensor-test.c - simulated sensor for the integration tests.
  *
- * Solo nel binario goodixfpd-test (mai installato). Stessa API di
- * gxd-sensor.c; al posto dell'USB c'e' un socket UNIX (--test-socket) da
- * cui, durante una scansione, si leggono comandi riga per riga:
- *   image <file.pgm>   tocco con questa immagine 8 bit 80x64 (P5)
- *   retry              tocco da ripetere
- *   finger 0|1         dito sollevato/appoggiato
- *   lost               sensore perso
- * Ogni comando eseguito riceve "ok\n": il test sa cosi' che il servizio stava
- * davvero acquisendo. Con GXD_TEST_OPEN_FAIL=1 l'apertura fallisce.
+ * Only in the goodixfpd-test binary (never installed). Same API as
+ * gxd-sensor.c; instead of USB there is a UNIX socket (--test-socket) from
+ * which, during a scan, commands are read line by line:
+ *   image <file.pgm>   a touch with this 8-bit 80x64 image (P5)
+ *   retry              a touch to be repeated
+ *   finger 0|1         finger lifted/placed
+ *   lost               sensor lost
+ * Every executed command receives "ok\n": that way the test knows the service
+ * was really capturing. With GXD_TEST_OPEN_FAIL=1 opening fails.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -42,7 +42,7 @@ struct _GxdSensor
   gboolean      scanning;
   int           listen_fd;
   int           conn_fd;
-  int           wake[2];      /* sveglia il thread bloccato in poll() */
+  int           wake[2];      /* wakes the thread blocked in poll() */
 };
 
 struct Worker
@@ -70,7 +70,7 @@ gxd_sensor_present (void)
   return TRUE;
 }
 
-/* ---- eventi ---- */
+/* ---- events ---- */
 
 typedef struct {
   GxdSensor *self;
@@ -123,7 +123,7 @@ post (Worker *w, int type, gboolean present, GxdScan *scan)
   g_main_context_invoke_full (w->self->ctx, G_PRIORITY_DEFAULT, event_dispatch, ev, event_free);
 }
 
-/* ---- comandi ---- */
+/* ---- commands ---- */
 
 static GxdScan *
 scan_from_pgm (const char *path)
@@ -149,7 +149,7 @@ scan_from_pgm (const char *path)
   return scan;
 }
 
-/* Una riga dal socket; FALSE se la scansione va fermata. */
+/* One line from the socket; FALSE if the scan must stop. */
 static gboolean
 read_line (Worker *w, char *line, gsize cap)
 {
@@ -174,8 +174,8 @@ read_line (Worker *w, char *line, gsize cap)
           self->conn_fd = accept (self->listen_fd, NULL, NULL);
           continue;
         }
-      /* un byte alla volta: il resto resta nel socket per la prossima
-       * scansione */
+      /* one byte at a time: the rest stays in the socket for the next
+       * scan */
       if (read (self->conn_fd, line + n, 1) != 1)
         {
           close (self->conn_fd);
@@ -312,7 +312,7 @@ join_thread (GTask *task, gpointer source, gpointer data, GCancellable *cancella
   char c;
 
   g_thread_join (w->thread);
-  /* svuota la sveglia */
+  /* drain the wake-up pipe */
   while (read (w->self->wake[0], &c, 1) == 1)
     ;
   g_free (w);

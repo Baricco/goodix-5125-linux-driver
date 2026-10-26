@@ -1,72 +1,75 @@
-# goodix-5125 — impronta digitale su Linux per Goodix 27c6:5125
+# goodix-5125 — Linux fingerprint support for the Goodix 27c6:5125
 
-Login con l'impronta su Linux per il lettore **Goodix `27c6:5125`** (e
-`27c6:5135`) integrato nel tasto di accensione dei portatili Huawei MateBook /
-Honor MagicBook. Si integra nello stack standard: **fprintd + pam_fprintd**,
-quindi funziona con `sudo`, greeter e blocco schermo, con la password sempre
-disponibile come alternativa. **Non modifica nessuna libreria**: libfprint e
-fprintd restano quelli della distribuzione e si aggiornano come sempre.
+Fingerprint login on Linux for the **Goodix `27c6:5125`** reader (and
+`27c6:5135`) built into the power button of Huawei MateBook / Honor MagicBook
+laptops. It plugs into the standard stack, **fprintd + pam_fprintd**, so it
+works with `sudo`, the greeter and the lock screen, with the password always
+available as an alternative. **No library is modified**: libfprint and fprintd
+stay the ones shipped by your distribution and update as usual.
 
-**Stato:** funzionante sul sensore reale (MateBook CREM-WXX9): registrazione,
-`sudo`, greeter, blocco schermo e GUI. Sui dati di taratura 0/25 dita
-sbagliate accettate e 22/25 tocchi del dito registrato riconosciuti al primo
-colpo; 16 scenari automatici contro `pam_fprintd` e i comandi `fprintd-*`.
-Vedi [come funziona e perché è sicuro](docs/how-it-works.md).
+**Status:** working on the real sensor (MateBook CREM-WXX9, Arch Linux and
+CachyOS): enrollment, `sudo`, greeter, lock screen and GUI. On the calibration
+data, 0/25 wrong fingers accepted and 22/25 touches of the enrolled finger
+recognized at the first attempt; 16 automated scenarios against `pam_fprintd`
+and the `fprintd-*` commands. See [how it works and why it is
+safe](docs/how-it-works.md).
 
-## Cosa contiene
+## What is inside
 
 | | |
 |---|---|
-| [`goodixfpd/`](goodixfpd) | **Il servizio**: parla l'interfaccia D-Bus di fprintd e gestisce il sensore (USB, TLS, immagine, confronto, impronte che migliorano con l'uso) |
-| [`packaging/`](packaging) | Pacchetto Arch **`goodixfpd`** |
-| [`gui/`](gui) | **Gestore impronte** (PySide6): registra, prova, cancella le impronte, per dito e per utente |
-| [`service/keyring-tpm/`](service/keyring-tpm) | Facoltativo: sblocco del portachiavi GNOME al login con impronta, password sigillata nel TPM |
-| [`docs/`](docs) | Guida d'installazione, BIOS, Secure Boot, recupero del sensore, funzionamento, protocollo |
-| [`tools/fp_tune/`](tools/fp_tune) | Banco di taratura: sessione al sensore con dump grezzi e analisi offline col codice reale del driver |
-| [`lab/`](lab) | Il laboratorio di reverse engineering (prototipo Python) da cui è nato il progetto |
+| [`goodixfpd/`](goodixfpd) | **The service**: speaks fprintd's D-Bus interface and drives the sensor (USB, TLS, imaging, matching, fingerprints that improve with use) |
+| [`packaging/`](packaging) | Arch package **`goodixfpd`** |
+| [`gui/`](gui) | **Fingerprint manager** (PySide6): enroll, test and delete fingerprints, per finger and per user |
+| [`service/keyring-tpm/`](service/keyring-tpm) | Optional: unlocks the GNOME keyring at fingerprint login, with the password sealed in the TPM |
+| [`docs/`](docs) | Installation guide, BIOS, Secure Boot, sensor recovery, how it works, protocol |
+| [`tools/fp_tune/`](tools/fp_tune) | Calibration bench: sensor session with raw dumps and offline analysis using the driver's real code |
+| [`contrib/`](contrib) | Fixes sent back to SIGFM and to Rockytkg's driver |
+| [`lab/`](lab) | The reverse-engineering lab (Python prototype) the project grew out of |
 
-## Installazione rapida (Arch / CachyOS)
+## Quick install (Arch and derivatives)
 
 ```sh
-cd packaging/goodixfpd && makepkg -si              # libfprint e fprintd restano quelli ufficiali
-fprintd-enroll -f right-index-finger               # oppure: python gui/fingerprint_manager.py
+git clone https://github.com/Baricco/goodix-5125-linux-driver.git goodix-driver
+cd goodix-driver/packaging/goodixfpd && makepkg -si   # libfprint and fprintd stay the official ones
+fprintd-enroll -f right-index-finger                  # or: python gui/fingerprint_manager.py
 ```
 
-Poi aggiungi `auth sufficient pam_fprintd.so max-tries=10 timeout=20` in cima
-ai file PAM che ti interessano. La procedura completa, con le regole
-anti-lockout e la risoluzione dei problemi, è nella
-**[guida passo passo](docs/INSTALL.md)**.
+Then add `auth sufficient pam_fprintd.so max-tries=10 timeout=20` at the top
+of the PAM files you care about. The complete procedure, with the
+anti-lockout rules and troubleshooting, is in the
+**[step-by-step guide](docs/INSTALL.md)**.
 
-## Documentazione
+## Documentation
 
-- [Guida d'installazione e d'uso](docs/INSTALL.md) — dal pacchetto al login, aggiornamenti, problemi
-- [Come funziona](docs/how-it-works.md) — catena, matcher, il problema dei falsi positivi e le difese, risultati
-- [BIOS](docs/bios.md) — impostazioni rilevanti (Secure Boot, TPM, virtualizzazione)
-- [Secure Boot su CachyOS + limine](docs/secure-boot.md)
-- [Recupero del sensore bloccato](docs/recovery.md)
-- [Sicurezza complessiva](SECURITY.md) — impronta, keyring, cifratura del disco
-- [Protocollo del sensore](docs/protocol.md) e [storia del matching](docs/matching.md)
+- [Installation and usage guide](docs/INSTALL.md) — from the package to login, updates, troubleshooting
+- [How it works](docs/how-it-works.md) — the chain, the matcher, the false-accept problem and its defences, results
+- [BIOS](docs/bios.md) — relevant settings (Secure Boot, TPM, virtualization)
+- [Secure Boot on CachyOS + limine](docs/secure-boot.md)
+- [Recovering a stuck sensor](docs/recovery.md)
+- [Overall security](SECURITY.md) — fingerprint, keyring, disk encryption
+- [Sensor protocol](docs/protocol.md) and [history of the matcher](docs/matching.md)
 
-## Sicurezza del sensore
+## Sensor safety
 
-Il servizio scrive nel sensore solo la propria chiave per il canale cifrato
-(area PSK, reversibile). **Non contiene e non scrive mai firmware.** Il
-firmware Goodix, le DLL Windows, le catture USB e le chiavi restano fuori dal
-repository.
+The service writes only its own key for the encrypted channel into the sensor
+(PSK area, reversible), and only when it cannot read the existing one back.
+**It contains no firmware and never writes any.** The Goodix firmware, the
+Windows DLLs, USB captures and keys stay out of the repository.
 
-## Crediti
+## Credits
 
-- [fprintd](https://gitlab.freedesktop.org/libfprint/fprintd) — l'interfaccia
-  D-Bus che `goodixfpd` implementa (le sue descrizioni XML sono incluse).
-- SIGFM, dalla merge request libfprint !530 (Matthieu Charette, Natasha
-  England-Elbro, Timur Mangliev) — l'algoritmo di confronto, riscritto in C.
+- [fprintd](https://gitlab.freedesktop.org/libfprint/fprintd) — the D-Bus
+  interface that `goodixfpd` implements (its XML descriptions are included).
+- SIGFM, from libfprint merge request !530 (Matthieu Charette, Natasha
+  England-Elbro, Timur Mangliev) — the matching algorithm, rewritten in C.
 - [Rockytkg/goodix-linux-27c6-5125](https://github.com/Rockytkg/goodix-linux-27c6-5125)
-  — core del protocollo del sensore, base delle nostre modifiche.
+  — the sensor protocol core our changes are based on.
 - [goodix-fp-linux-dev](https://github.com/goodix-fp-linux-dev) — goodix-fp-dump, SIGFM.
-- sorguido / grold (goodix-27c6-5125, LGPL-2.1) — algoritmo di provisioning PSK.
+- sorguido / grold (goodix-27c6-5125, LGPL-2.1) — PSK provisioning algorithm.
 
-## Licenza
+## License
 
-[GPL-2.0-or-later](LICENSE), compresi il core del sensore e le descrizioni
-dell'interfaccia di fprintd. Reverse engineering a fini di interoperabilità su
-hardware proprio.
+[GPL-2.0-or-later](LICENSE), including the sensor core and the fprintd
+interface descriptions. Reverse engineering for interoperability on hardware
+you own.

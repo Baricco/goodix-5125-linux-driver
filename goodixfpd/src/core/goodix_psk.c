@@ -1,14 +1,15 @@
-/* goodix_psk.c - PSK 管理
+/* goodix_psk.c - PSK management
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
- * PSK 生命周期：
- *   首次初始化：生成随机 32B PSK -> 白盒 AES-GCM 加密 -> 写入 MCU
- *   后续初始化：读取 MCU 数据（0xBB010003）-> 用白盒 AES 解密 Block
- *               -> 用作 TLS-PSK
+ * PSK life cycle:
+ *   first init: generate a random 32 B PSK -> white-box AES-GCM encryption ->
+ *               write it to the MCU
+ *   later inits: read the MCU data (0xBB010003) -> decrypt the block with the
+ *                white-box AES -> use it as TLS-PSK
  *
- * 白盒加密为 AES-256-GCM，使用固定派生密钥，外加 HMAC-SHA256 信封。
- * 全部是确定性的（无随机成分），因此 host_hash = SHA256(blob)
- * 总是等于 MCU 端对存储 blob 的哈希。
+ * The white-box encryption is AES-256-GCM with a fixed derived key plus an
+ * HMAC-SHA256 envelope. Everything is deterministic (no random component), so
+ * host_hash = SHA256(blob) always equals the MCU's hash of the stored blob.
  */
 #include <string.h>
 #include <stdio.h>
@@ -21,54 +22,59 @@
 #include "goodix.h"
 
 /* ======================================================================
- * PSK 白盒 AES-GCM。构造为固定派生密钥的 AES-256-GCM 加 HMAC-SHA256
- * 信封，并校正为 MCU 固件（st411sec_app.bin）使用的常量：
- *   KDF 密钥 = "Goodix" 变体（固件默认全局：variant=0，string selector=1），
- *   GCM AAD = 固件 flash 常量。
- * 固件是最终的解密者——它决定 TLS PSK。
+ * PSK white-box AES-GCM. Built as AES-256-GCM with a fixed derived key plus
+ * an HMAC-SHA256 envelope, corrected to the constants used by the MCU
+ * firmware (st411sec_app.bin):
+ *   KDF key = the "Goodix" variant (firmware default global: variant=0,
+ *             string selector=1),
+ *   GCM AAD = a firmware flash constant.
+ * The firmware is the final decryptor - it decides the TLS PSK.
  *
- * Blob 布局（inlen + 70 字节；多字节字段为 LE）：
+ * Blob layout (inlen + 70 bytes; multi-byte fields are LE):
  *   [0..31]           HMAC-SHA256(key=v43[16..48],
  *                                   msg=blob[32..38] || ct || tag)
- *   [32..33]          02 FF   （WORD 0xFF02，按 LE 存储）
- *   [34..37]          明文长度 (u32)
+ *   [32..33]          02 FF   (WORD 0xFF02, stored LE)
+ *   [34..37]          plaintext length (u32)
  *   [38..53]          iv = v42[0..15]
- *   [54..53+len]      ct  = AES-256-GCM 密文
- *   [54+len..69+len]  tag = GCM 标签（16B）
+ *   [54..53+len]      ct  = AES-256-GCM ciphertext
+ *   [54+len..69+len]  tag = GCM tag (16 B)
  *
- * 密钥调度：
- *   v43 = T1 || T2[0..15]  （48 字节）
+ * Key schedule:
+ *   v43 = T1 || T2[0..15]  (48 bytes)
  *   T_i = HMAC-SHA256(key=WB_KDF_KEY,
  *                     msg=BE32(i) || "kgoodwixg\0" ||
- *                         "kaelrgnoerlithm" || 00 00 01 80)，i = 1,2
- *   AES-256-GCM 密钥 = v43[0..32]，块 HMAC 密钥 = v43[16..48]
+ *                         "kaelrgnoerlithm" || 00 00 01 80), i = 1,2
+ *   AES-256-GCM key = v43[0..32], block HMAC key = v43[16..48]
  *   v42 = SHA256(02 FF || len32le || plain[0..len/4] || 16 x LE32(3))
- *   GCM iv = v42[0..15]，GCM aad = WB_GCM_AAD（16 字节）
+ *   GCM iv = v42[0..15], GCM aad = WB_GCM_AAD (16 bytes)
  *
- * WB_GCM_AAD 来自 MCU 固件（st411sec_app.bin 中 0xFF02 解密路径
- * 从 flash 加载），而不是来自驱动内部解密的立即数 AAD
- * （52 2A C3 F0 ...）。固件是权威：一个在固件 AAD 下无法认证的 blob
- * 会被 MCU 拒绝，MCU 随后派生出不同的 TLS PSK -> 握手报 bad_record_mac。
- * 经固件 WB 解密验证：key=WB_KDF_KEY + 此 AAD 能精确还原 PSK；
- * 该 AAD 无法通过固件的 GCM 标签检查。
+ * WB_GCM_AAD comes from the MCU firmware (loaded from flash by the 0xFF02
+ * decryption path in st411sec_app.bin), not from the immediate AAD of the
+ * driver's internal decryption (52 2A C3 F0 ...). The firmware is
+ * authoritative: a blob that does not authenticate under the firmware AAD is
+ * rejected by the MCU, which then derives a different TLS PSK -> the
+ * handshake fails with bad_record_mac.
+ * Verified through the firmware's WB decryption: key=WB_KDF_KEY + this AAD
+ * reproduces the PSK exactly; the other AAD fails the firmware's GCM tag
+ * check.
  * ====================================================================== */
 
 static const uint8_t WB_KDF_KEY[32] = {
-    /* 固件 derive1（"Goodix" selector） */
+    /* firmware derive1 ("Goodix" selector) */
     0x5C, 0xBA, 0x6E, 0x25, 0x81, 0x95, 0x18, 0xDE,
     0x2D, 0x53, 0xE9, 0x6D, 0xC0, 0x34, 0x7A, 0xB0,
-    /* 固件 derive2 */
+    /* firmware derive2 */
     0xD4, 0x27, 0xD4, 0x08, 0x4B, 0xDA, 0x4F, 0xAE,
     0x1B, 0xFF, 0x2B, 0x09, 0x11, 0x2A, 0x57, 0xE5
 };
 
-/* 固件 GCM AAD（st411sec_app.bin 的 0xFF02 解密路径） */
+/* firmware GCM AAD (0xFF02 decryption path of st411sec_app.bin) */
 static const uint8_t WB_GCM_AAD[16] = {
     0x52, 0x2D, 0xC1, 0xF0, 0x99, 0x56, 0x7D, 0x07,
     0xF4, 0x7F, 0x37, 0xA3, 0x2A, 0x84, 0x42, 0x7D
 };
 
-/* KDF：v43 = T1 || T2[0..15]，共 48 字节 */
+/* KDF: v43 = T1 || T2[0..15], 48 bytes in total */
 static void psk_kdf(uint8_t out[48])
 {
     /* "kgoodwixg\0" || "kaelrgnoerlithm" || 00 00 01 80 */
@@ -97,7 +103,7 @@ static int psk_derive_v42(const uint8_t *plain, uint32_t len, uint8_t out[32])
                        (uint8_t)(len >> 16), (uint8_t)(len >> 24) };
     uint8_t d3[4] = { 3, 0, 0, 0 };
     unsigned int olen = 0;
-    uint32_t head = len >> 2;   /* 参与哈希的明文字节数 = len >> 2 */
+    uint32_t head = len >> 2;   /* number of plaintext bytes hashed = len >> 2 */
     int ok;
     if (!ctx)
         return -1;
@@ -112,7 +118,7 @@ static int psk_derive_v42(const uint8_t *plain, uint32_t len, uint8_t out[32])
     return ok ? 0 : -1;
 }
 
-/* AES-256-GCM 加密，16 字节 iv + 16 字节 tag */
+/* AES-256-GCM encryption, 16-byte iv + 16-byte tag */
 static int aes_256_gcm_encrypt(const uint8_t key[32], const uint8_t iv[16],
                                const uint8_t *plain, uint32_t len,
                                uint8_t *ct, uint8_t tag[16])
@@ -133,7 +139,7 @@ static int aes_256_gcm_encrypt(const uint8_t key[32], const uint8_t iv[16],
     return ok ? 0 : -1;
 }
 
-/* AES-256-GCM 解密 + 标签校验；认证失败返回 -2 */
+/* AES-256-GCM decryption + tag check; returns -2 on authentication failure */
 static int aes_256_gcm_decrypt(const uint8_t key[32], const uint8_t iv[16],
                                const uint8_t *ct, uint32_t len,
                                const uint8_t tag[16], uint8_t *plain)
@@ -150,12 +156,12 @@ static int aes_256_gcm_decrypt(const uint8_t key[32], const uint8_t iv[16],
          EVP_DecryptUpdate(ctx, plain, &n, ct, (int)len) == 1 &&
          EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, 16, (void *)tag) == 1;
     if (ok && EVP_DecryptFinal_ex(ctx, plain + n, &n2) != 1)
-        ok = 0;   /* GCM 标签不匹配：WB 密钥/blob 不一致 */
+        ok = 0;   /* GCM tag mismatch: WB key and blob do not agree */
     EVP_CIPHER_CTX_free(ctx);
     return ok ? 0 : -2;
 }
 
-/* 白盒加密。输出布局见上；wb_len = len + 70 */
+/* White-box encryption. Output layout above; wb_len = len + 70 */
 int gx_wb_encrypt(const uint8_t *plain, uint32_t len, uint8_t *out, uint32_t *out_len)
 {
     uint8_t k48[48];
@@ -185,7 +191,7 @@ int gx_wb_encrypt(const uint8_t *plain, uint32_t len, uint8_t *out, uint32_t *ou
                             out + 54, out + 54 + len) != 0)
         return -1;
 
-    /* 块 HMAC：HMAC-SHA256(key=v43[16..48],
+    /* block HMAC: HMAC-SHA256(key=v43[16..48],
      *                         msg=blob[32..38] || ct || tag) */
     memcpy(msg + n, out + 32, 6); n += 6;
     memcpy(msg + n, out + 54, (size_t)(len + 16)); n += len + 16;
@@ -215,7 +221,7 @@ int gx_wb_decrypt(const uint8_t *wb, uint32_t wb_len, uint8_t *plain, uint32_t *
     if (54 + len + 16 > wb_len)
         return -2;
 
-    /* 先校验块 HMAC，再处理密文 */
+    /* check the block HMAC first, then handle the ciphertext */
     memcpy(msg + n, wb + 32, 6); n += 6;
     memcpy(msg + n, wb + 54, (size_t)(len + 16)); n += len + 16;
     HMAC(EVP_sha256(), k48 + 16, 32, msg, n, h, &hlen);
@@ -231,15 +237,15 @@ int gx_wb_decrypt(const uint8_t *wb, uint32_t wb_len, uint8_t *plain, uint32_t *
 
 
 
-/* ============ MCU 写 / 读（PSK 生命周期管理） =================
+/* ============ MCU write / read (PSK life cycle) =================
  *
- * 写 TLV：
+ * Write TLVs:
  *   [0xBB010002 u32 LE] [len u32 LE] [dummy seal 64B] [entropy 8B]
  *   [0xBB010003 u32 LE] [wb_len u32 LE] [wb block 102B]
- * MCU 忽略宿主侧 DPAPI 密封（ARM 无法运行 CryptProtectData）；
- * 这里写入固定 64B 填充 + 8B 熵。
+ * The MCU ignores the host-side DPAPI seal (an ARM chip cannot run
+ * CryptProtectData); a fixed 64 B padding + 8 B of entropy are written here.
  *
- * 读：gx_mcu_read(GF_DT_PSK_DATA) 返回 wb block；再 WB 解密。
+ * Read: gx_mcu_read(GF_DT_PSK_DATA) returns the wb block; then WB decryption.
  */
 int gx_psk_write_to_mcu(struct goodix_dev *d, const uint8_t *psk)
 {
@@ -270,7 +276,7 @@ int gx_psk_write_to_mcu(struct goodix_dev *d, const uint8_t *psk)
     memcpy(tlv + o, &wb_len, 4); o += 4;
     memcpy(tlv + o, wb, wb_len); o += wb_len;
 
-    /* 将数据长度补齐到 4 字节边界。190 -> 192。 */
+    /* pads the data length to a 4-byte boundary. 190 -> 192. */
     while (o & 3)
         tlv[o++] = 0;
     r = gx_mcu_write(d, tlv, (uint16_t)o);
@@ -295,8 +301,9 @@ int gx_psk_read_from_mcu(struct goodix_dev *d)
         LOG("gx_mcu_read PSK failed (%d)", r);
         return r;
     }
-    /* gx_mcu_read 已剥离状态字节；载荷为
-     * [data_type 4B][len 4B][wb 102B]（数据在 8 字节头之后）。跳过头部。 */
+    /* gx_mcu_read has already stripped the status byte; the payload is
+     * [data_type 4B][len 4B][wb 102B] (data after the 8-byte header). Skip
+     * the header. */
     if (bl < 8 + 102) {
         LOG("PSK read response too short (%u B, want >=110)", bl);
         return -2;
@@ -313,13 +320,15 @@ int gx_psk_read_from_mcu(struct goodix_dev *d)
     return 0;
 }
 
-/* ================= PSK 宿主侧存储 + MCU 哈希校验 =================
+/* ================= host-side PSK storage + MCU hash check =================
  *
- * 持久化：宿主存储 Goodix_Cache.bin 等价物，保存 [DPAPI-seal][entropy]，
- * 密封让宿主以后无需重读 MCU 即可恢复明文 PSK。MCU 从不校验密封
- * （它是 ARM 芯片；CryptProtectData 仅宿主可用）。Linux 上将明文 PSK
- * 存入 0600 文件，等效的单用户保护。可换用 Secret-Service (libsecret)
- * 后端——无论选择哪种宿主存储，MCU 协议都不受影响。
+ * Persistence: the host stores the equivalent of Goodix_Cache.bin, holding
+ * [DPAPI-seal][entropy]; the seal lets the host recover the plaintext PSK
+ * later without rereading the MCU. The MCU never checks the seal (it is an
+ * ARM chip; CryptProtectData exists only on the host). On Linux the plaintext
+ * PSK is stored in a 0600 file, the equivalent single-user protection. A
+ * Secret Service (libsecret) backend could be used instead - whatever host
+ * storage is chosen, the MCU protocol is unaffected.
  */
 
 static const char *psk_store_path(void)
@@ -358,8 +367,8 @@ int gx_psk_store_load(uint8_t *psk, uint32_t *len)
     if (!f)
         return -1;
     got = fread(psk, 1, *len, f);
-    /* 文件比期望长度还多出内容 = 缓存被破坏/篡改：拒绝采用，让调用方
-     * 走"读 MCU / 重写"自愈路径。 */
+    /* More content than the expected length = damaged/tampered cache: refuse
+     * it and let the caller take the "read MCU / rewrite" self-healing path. */
     if (fgetc(f) != EOF) {
         LOG("PSK store %s oversized (cap %u), rejected", path, *len);
         fclose(f);
@@ -373,7 +382,7 @@ int gx_psk_store_load(uint8_t *psk, uint32_t *len)
     return 0;
 }
 
-/* 宿主哈希 = SHA256(WB block) */
+/* host hash = SHA256(WB block) */
 int gx_psk_host_hash(const uint8_t *wb, uint32_t wb_len, uint8_t out[32])
 {
     EVP_MD_CTX *ctx = EVP_MD_CTX_new();
@@ -388,14 +397,15 @@ int gx_psk_host_hash(const uint8_t *wb, uint32_t wb_len, uint8_t out[32])
     return ok ? 0 : -1;
 }
 
-/* 校验 MCU 持有的是否为我们写入的同一 PSK。
+/* Checks whether the MCU holds the same PSK we wrote.
  *
- * MCU 哈希响应格式：
+ * MCU hash response format:
  *   [status 1B][data_type 4B LE][len 4B LE][hash 32B]
- * gx_mcu_read 已剥离状态字节，因此 out =
- *   [data_type 4B][len 4B][hash 32B]（40 字节），哈希位于 out[8..39]。
- * 将哈希与 SHA256(我们的 WB block) 比较。相等说明 MCU 用其白盒
- * 成功解密了我们的 WB -> 加密正确。 */
+ * gx_mcu_read has already stripped the status byte, so out =
+ *   [data_type 4B][len 4B][hash 32B] (40 bytes), hash at out[8..39].
+ * The hash is compared with SHA256(our WB block). Equal means the MCU
+ * successfully decrypted our WB with its white box -> the encryption is
+ * correct. */
 int gx_psk_verify_mcu_hash(struct goodix_dev *d)
 {
     uint8_t mcu_buf[64];

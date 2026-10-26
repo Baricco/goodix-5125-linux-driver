@@ -1,37 +1,36 @@
 # packaging
 
-## `goodixfpd/` — il pacchetto da usare
+## `goodixfpd/` — the package to use
 
-Pacchetto Arch del servizio [`goodixfpd`](../goodixfpd). Installa:
+Arch package of the [`goodixfpd`](../goodixfpd) service. It installs:
 
-- `/usr/lib/goodixfpd`, il servizio;
-- `/usr/lib/systemd/system/fprintd.service.d/goodixfpd.conf`, il drop-in che
-  lo fa avviare al posto del demone di fprintd (stessa unità, stessa
-  protezione systemd);
-- un hook di pacman che, dopo ogni aggiornamento, controlla che il servizio si
-  carichi ancora.
+- `/usr/lib/goodixfpd`, the service;
+- `/usr/lib/systemd/system/fprintd.service.d/goodixfpd.conf`, the drop-in that
+  starts it instead of fprintd's daemon (same unit, same systemd protection);
+- a pacman hook that, after every update, checks that the service still
+  loads.
 
-Non sostituisce né modifica nessun pacchetto: dipende dai `libfprint` e
-`fprintd` della distribuzione. Va in conflitto solo con il vecchio
+It neither replaces nor modifies any package: it depends on the
+distribution's `libfprint` and `fprintd`. It conflicts only with the old
 `libfprint-goodixgf`.
 
 ```sh
 cd goodixfpd && makepkg -si
 ```
 
-`check()` esegue tutti i test del servizio (`meson test`): canale TLS, formato
-delle impronte e 16 scenari D-Bus contro `pam_fprintd.so` e i comandi
-`fprintd-*`, con sensore simulato.
+`check()` runs all the service tests (`meson test`): TLS channel, fingerprint
+format and 16 D-Bus scenarios against `pam_fprintd.so` and the `fprintd-*`
+commands, with a simulated sensor.
 
-**Aggiornamenti.** Nessuna azione quando escono libfprint o fprintd nuovi. Si
-ricompila (`makepkg -sif`) solo se una dipendenza cambia versione binaria
-(soname): l'hook lo segnala con il nome della libreria mancante.
+**Updates.** Nothing to do when new libfprint or fprintd versions come out. A
+rebuild (`makepkg -sif`) is needed only if a dependency changes its binary
+version (soname): the hook reports it with the name of the missing library.
 
-## Prima di `goodixfpd`
+## Before `goodixfpd`
 
-Fino al 25/10/2026 il lettore funzionava con `libfprint-goodixgf`: libfprint
-ufficiale più 21 patch (matcher SIGFM dalla merge request !530 e il driver
-`goodixgf`), da riallineare a ogni nuova libfprint con `goodixgf-update`.
-`goodixfpd` lo ha sostituito senza modificare nessuna libreria. I file sono
-nella storia git (commit `583882d` e precedenti); le correzioni utili agli
-altri progetti sono in [`contrib/`](../contrib).
+Until 25/10/2026 the reader worked with `libfprint-goodixgf`: the official
+libfprint plus 21 patches (the SIGFM matcher from merge request !530 and the
+`goodixgf` driver), to be realigned with every new libfprint through
+`goodixgf-update`. `goodixfpd` replaced it without modifying any library. The
+files are in the git history (commit `905750c` and earlier); the fixes useful
+to other projects are in [`contrib/`](../contrib).

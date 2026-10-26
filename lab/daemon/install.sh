@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# install.sh — installazione di sistema del demone goodixfpd (una volta sola).
-# Crea l'utente/gruppo, la regola udev, il client PAM, il servizio systemd, e fa il deploy in /opt.
-# NON tocca PAM: quello si fa a mano, col collaudo sicuro di docs/pam-integration.md.
+# install.sh — system installation of the goodixfpd daemon (only once).
+# Creates the user/group, the udev rule, the PAM client, the systemd service, and deploys to /opt.
+# It does NOT touch PAM: that is done by hand, with the safe test of docs/pam-integration.md.
 #
-# Uso:  sudo lab/daemon/install.sh
+# Usage:  sudo lab/daemon/install.sh
 set -euo pipefail
 
-SRC="$(cd "$(dirname "$0")" && pwd)"          # directory lab/daemon/ del repo
+SRC="$(cd "$(dirname "$0")" && pwd)"          # the repository's lab/daemon/ directory
 GROUP=goodixfp; USERN=goodixfp
 
-[ "$(id -u)" = 0 ] || { echo "deve girare come root: sudo lab/daemon/install.sh" >&2; exit 1; }
+[ "$(id -u)" = 0 ] || { echo "must run as root: sudo lab/daemon/install.sh" >&2; exit 1; }
 
-echo "[install] 1/5 utente e gruppo di sistema '$USERN'"
+echo "[install] 1/5 system user and group '$USERN'"
 getent group  "$GROUP" >/dev/null || groupadd -r "$GROUP"
 NOLOGIN="$(command -v nologin || echo /usr/bin/nologin)"
 getent passwd "$USERN" >/dev/null || \
@@ -20,16 +20,16 @@ getent passwd "$USERN" >/dev/null || \
 echo "[install] 2/5 payload in /opt (deploy)"
 "$SRC/deploy.sh"
 
-echo "[install] 3/5 regola udev (accesso al sensore per il gruppo; sostituisce la vecchia uaccess)"
+echo "[install] 3/5 udev rule (sensor access for the group; replaces the old uaccess one)"
 install -m644 "$SRC/70-goodixfp.rules" /etc/udev/rules.d/70-goodixfp.rules
 rm -f /etc/udev/rules.d/70-goodix-5125.rules
 udevadm control --reload
 udevadm trigger
 
-echo "[install] 4/5 client PAM in /usr/local/lib/goodixfp"
+echo "[install] 4/5 PAM client in /usr/local/lib/goodixfp"
 install -Dm755 "$SRC/goodixfp-verify" /usr/local/lib/goodixfp/goodixfp-verify
 
-echo "[install] 5/5 servizio systemd"
+echo "[install] 5/5 systemd service"
 install -m644 "$SRC/goodixfpd.service" /etc/systemd/system/goodixfpd.service
 systemctl daemon-reload
 systemctl enable --now goodixfpd
@@ -39,24 +39,24 @@ systemctl --no-pager --full status goodixfpd | head -n 8 || true
 cat <<'NEXT'
 
 ============================================================
-Installato. ORA il collaudo, nell'ordine (niente PAM finché il socket non va):
+Installed. NOW the test, in this order (no PAM until the socket works):
 
- 1) Registra un'impronta con la GUI (da utente) e copiala nello store di sistema:
-      tools/.venv/bin/python lab/enroll_gui.py        # mappa denso + Salva
+ 1) Enroll a fingerprint with the GUI (as the user) and copy it into the system store:
+      tools/.venv/bin/python lab/enroll_gui.py        # map densely + Save
       sudo install -Dm640 -o root -g goodixfp \
-           state/fingers/<nome>.npz /var/lib/goodixfp/$USER/<nome>.npz
+           state/fingers/<name>.npz /var/lib/goodixfp/$USER/<name>.npz
 
- 2) Test del socket (il socket è di goodixfp; con sudo ci parla root). Tocca il sensore DECISO:
-      sudo /usr/local/lib/goodixfp/goodixfp-verify $USER; echo "esito=$?"
-    esito=0 = riconosciuto. Prova anche un altro dito -> esito=1.
-    (Per testarlo SENZA sudo: aggiungiti al gruppo con 'sudo usermod -aG goodixfp $USER' e rilogga.)
+ 2) Socket test (the socket belongs to goodixfp; with sudo root talks to it). Touch the sensor FIRMLY:
+      sudo /usr/local/lib/goodixfp/goodixfp-verify $USER; echo "result=$?"
+    result=0 = recognized. Try another finger too -> result=1.
+    (To test it WITHOUT sudo: add yourself to the group with 'sudo usermod -aG goodixfp $USER' and log in again.)
 
- 3) Solo quando il socket dà esito=0 in modo affidabile, collega PAM a sudo:
-    tieni aperta una shell root (sudo -i) in un altro terminale, poi metti IN CIMA
-    a /etc/pam.d/sudo:
+ 3) Only when the socket reliably gives result=0, hook PAM to sudo:
+    keep a root shell open (sudo -i) in another terminal, then put AT THE TOP
+    of /etc/pam.d/sudo:
       auth  sufficient  pam_exec.so  quiet  /usr/local/lib/goodixfp/goodixfp-verify
-    Dettagli e login al greeter: docs/pam-integration.md
+    Details and greeter login: docs/pam-integration.md
 
-Per disinstallare tutto:  sudo lab/daemon/uninstall.sh
+To uninstall everything:  sudo lab/daemon/uninstall.sh
 ============================================================
 NEXT

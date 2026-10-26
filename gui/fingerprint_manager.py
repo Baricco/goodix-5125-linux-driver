@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Gestore impronte digitali — front-end grafico per fprintd.
+"""Fingerprint manager — graphical front end for fprintd.
 
-Registra, elenca, cancella e testa le impronte di un utente tramite il
-servizio di sistema fprintd (net.reactivated.Fprint) via QtDBus. Nessuna
-dipendenza oltre PySide6: QtDBus parla direttamente col bus di sistema.
+Enrolls, lists, deletes and tests a user's fingerprints through the fprintd
+system service (net.reactivated.Fprint) via QtDBus. No dependency besides
+PySide6: QtDBus talks to the system bus directly.
 
-Backend = goodixfpd, che risponde come fprintd (vedi goodixfpd/). La GUI NON
-tocca il sensore direttamente: delega tutto a fprintd, quindi convive col
-login a impronta (pam_fprintd) senza litigare il device.
+Backend = goodixfpd, which answers as fprintd (see goodixfpd/). The GUI does
+NOT touch the sensor directly: it delegates everything to fprintd, so it lives
+alongside fingerprint login (pam_fprintd) without fighting over the device.
 
-Uso:  python gui/fingerprint_manager.py        (serve PySide6: pacman -S pyside6)
+Usage:  python gui/fingerprint_manager.py        (needs PySide6: pacman -S pyside6)
 """
 from __future__ import annotations
 
@@ -33,44 +33,44 @@ MANAGER_IFACE = "net.reactivated.Fprint.Manager"
 DEVICE_IFACE = "net.reactivated.Fprint.Device"
 PROPS_IFACE = "org.freedesktop.DBus.Properties"
 
-# Slot di dito riconosciuti da fprintd -> etichetta leggibile.
+# Finger slots known to fprintd -> readable label.
 FINGERS = {
-    "right-thumb": "Pollice destro",
-    "right-index-finger": "Indice destro",
-    "right-middle-finger": "Medio destro",
-    "right-ring-finger": "Anulare destro",
-    "right-little-finger": "Mignolo destro",
-    "left-thumb": "Pollice sinistro",
-    "left-index-finger": "Indice sinistro",
-    "left-middle-finger": "Medio sinistro",
-    "left-ring-finger": "Anulare sinistro",
-    "left-little-finger": "Mignolo sinistro",
+    "right-thumb": "Right thumb",
+    "right-index-finger": "Right index finger",
+    "right-middle-finger": "Right middle finger",
+    "right-ring-finger": "Right ring finger",
+    "right-little-finger": "Right little finger",
+    "left-thumb": "Left thumb",
+    "left-index-finger": "Left index finger",
+    "left-middle-finger": "Left middle finger",
+    "left-ring-finger": "Left ring finger",
+    "left-little-finger": "Left little finger",
 }
 
-# Messaggi di stato enroll/verify -> testo guida in italiano.
+# enroll/verify status messages -> guidance text.
 STATUS_HINTS = {
-    "enroll-stage-passed": "Tocco acquisito ✓ — stacca il dito e riappoggia su una zona poco diversa.",
-    "enroll-retry-scan": "Tocco non valido — premi più deciso e riprova.",
-    "enroll-swipe-too-short": "Troppo breve — tieni il dito fermo finché non conferma.",
-    "enroll-finger-not-centered": "Dito non centrato — spostalo verso il centro del sensore.",
-    "enroll-remove-and-retry": "Stacca il dito e riappoggialo.",
-    "enroll-data-full": "Template pieno.",
-    "enroll-completed": "Registrazione completata ✓",
-    "enroll-failed": "Registrazione fallita.",
-    "verify-match": "RICONOSCIUTA ✓",
-    "verify-no-match": "Non riconosciuta ✗ — riprova toccando la zona registrata.",
-    "verify-retry-scan": "Tocco non valido — ripremi.",
-    "verify-swipe-too-short": "Troppo breve — tieni fermo.",
-    "verify-finger-not-centered": "Dito non centrato.",
-    "verify-remove-and-retry": "Stacca e riappoggia.",
-    "verify-unknown-error": "Errore sconosciuto.",
+    "enroll-stage-passed": "Touch captured ✓ — lift the finger and place it on a slightly different spot.",
+    "enroll-retry-scan": "Invalid touch — press more firmly and try again.",
+    "enroll-swipe-too-short": "Too short — keep the finger still until it confirms.",
+    "enroll-finger-not-centered": "Finger not centred — move it towards the centre of the sensor.",
+    "enroll-remove-and-retry": "Lift the finger and place it again.",
+    "enroll-data-full": "Template full.",
+    "enroll-completed": "Enrollment completed ✓",
+    "enroll-failed": "Enrollment failed.",
+    "verify-match": "RECOGNIZED ✓",
+    "verify-no-match": "Not recognized ✗ — try again touching the enrolled area.",
+    "verify-retry-scan": "Invalid touch — press again.",
+    "verify-swipe-too-short": "Too short — keep it still.",
+    "verify-finger-not-centered": "Finger not centred.",
+    "verify-remove-and-retry": "Lift and place it again.",
+    "verify-unknown-error": "Unknown error.",
 }
 
 
 class FingerprintManager(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Gestore impronte")
+        self.setWindowTitle("Fingerprint manager")
         self.resize(560, 460)
 
         self.bus = QDBusConnection.systemBus()
@@ -89,16 +89,16 @@ class FingerprintManager(QMainWindow):
         central = QWidget()
         root = QVBoxLayout(central)
 
-        self.dev_label = QLabel("Sensore: —")
+        self.dev_label = QLabel("Sensor: —")
         self.dev_label.setStyleSheet("font-weight: bold;")
         root.addWidget(self.dev_label)
 
-        # Riga utente
+        # User row
         urow = QHBoxLayout()
-        urow.addWidget(QLabel("Utente:"))
+        urow.addWidget(QLabel("User:"))
         self.user_edit = QLineEdit(getpass.getuser())
         urow.addWidget(self.user_edit)
-        btn_load = QPushButton("Carica")
+        btn_load = QPushButton("Load")
         btn_load.clicked.connect(self.refresh_list)
         urow.addWidget(btn_load)
         root.addLayout(urow)
@@ -108,41 +108,41 @@ class FingerprintManager(QMainWindow):
 
         body = QHBoxLayout()
 
-        # Colonna sinistra: impronte registrate
+        # Left column: enrolled fingerprints
         left = QVBoxLayout()
-        left.addWidget(QLabel("Impronte registrate"))
+        left.addWidget(QLabel("Enrolled fingerprints"))
         self.finger_list = QListWidget()
         left.addWidget(self.finger_list, 1)
         brow = QHBoxLayout()
-        self.btn_delete = QPushButton("Elimina")
+        self.btn_delete = QPushButton("Delete")
         self.btn_delete.clicked.connect(self.delete_selected)
-        self.btn_delete_all = QPushButton("Elimina tutte")
+        self.btn_delete_all = QPushButton("Delete all")
         self.btn_delete_all.clicked.connect(self.delete_all)
         brow.addWidget(self.btn_delete)
         brow.addWidget(self.btn_delete_all)
         left.addLayout(brow)
         body.addLayout(left, 1)
 
-        # Colonna destra: azioni
+        # Right column: actions
         right = QVBoxLayout()
-        right.addWidget(QLabel("Registra nuova impronta"))
+        right.addWidget(QLabel("Enroll a new fingerprint"))
         self.finger_combo = QComboBox()
         right.addWidget(self.finger_combo)
-        self.btn_enroll = QPushButton("Registra (enroll)")
+        self.btn_enroll = QPushButton("Enroll")
         self.btn_enroll.clicked.connect(self.start_enroll)
         right.addWidget(self.btn_enroll)
 
         self.progress = QProgressBar()
         self.progress.setTextVisible(True)
-        self.progress.setVisible(False)      # solo durante una registrazione
+        self.progress.setVisible(False)      # only during an enrollment
         right.addWidget(self.progress)
 
         right.addSpacing(10)
-        self.btn_verify = QPushButton("Prova (verifica)")
+        self.btn_verify = QPushButton("Test (verify)")
         self.btn_verify.clicked.connect(self.start_verify)
         right.addWidget(self.btn_verify)
 
-        self.btn_cancel = QPushButton("Annulla")
+        self.btn_cancel = QPushButton("Cancel")
         self.btn_cancel.clicked.connect(self.cancel_op)
         self.btn_cancel.setEnabled(False)
         right.addWidget(self.btn_cancel)
@@ -151,7 +151,7 @@ class FingerprintManager(QMainWindow):
         body.addLayout(right, 1)
         root.addLayout(body, 1)
 
-        self.status = QLabel("Pronto.")
+        self.status = QLabel("Ready.")
         self.status.setWordWrap(True)
         self.status.setStyleSheet("padding: 6px; background: palette(midlight); border-radius: 4px;")
         root.addWidget(self.status)
@@ -176,21 +176,21 @@ class FingerprintManager(QMainWindow):
     def _find_device(self) -> None:
         reply = self._manager().call("GetDefaultDevice")
         if reply.type() == QDBusMessage.ErrorMessage or not reply.arguments():
-            self.dev_label.setText("Sensore: NON trovato (fprintd attivo?)")
+            self.dev_label.setText("Sensor: NOT found (is fprintd running?)")
             self._set_enabled(False)
             return
         arg = reply.arguments()[0]
         self.dev_path = arg.path() if isinstance(arg, QDBusObjectPath) else str(arg)
         if not self.dev_path.startswith("/"):
-            self.dev_label.setText("Sensore: path non valido")
+            self.dev_label.setText("Sensor: invalid path")
             self._set_enabled(False)
             self.dev_path = None
             return
         name = self._get_prop("name")
-        self.dev_label.setText(f"Sensore: {name or self.dev_path}")
-        # num-enroll-stages per la progress bar (via Properties.Get).
+        self.dev_label.setText(f"Sensor: {name or self.dev_path}")
+        # num-enroll-stages for the progress bar (via Properties.Get).
         self.enroll_total = int(self._get_prop("num-enroll-stages") or 0)
-        # Collega i segnali una sola volta.
+        # Connect the signals only once.
         self.bus.connect(FPRINT_SERVICE, self.dev_path, DEVICE_IFACE,
                          "EnrollStatus", self, SLOT("on_enroll_status(QString,bool)"))
         self.bus.connect(FPRINT_SERVICE, self.dev_path, DEVICE_IFACE,
@@ -211,7 +211,7 @@ class FingerprintManager(QMainWindow):
             self._device().call("Release")
             self.claimed = False
 
-    # ---------------- Azioni ----------------
+    # ---------------- Actions ----------------
     @Slot()
     def refresh_list(self) -> None:
         if not self.dev_path:
@@ -230,19 +230,19 @@ class FingerprintManager(QMainWindow):
             item = QListWidgetItem(f"{label}  ({slot})")
             item.setData(Qt.UserRole, slot)
             self.finger_list.addItem(item)
-        # Popola la combo coi diti NON ancora registrati.
+        # Fill the combo with the fingers NOT enrolled yet.
         self.finger_combo.clear()
         for slot, label in FINGERS.items():
             if slot not in enrolled:
                 self.finger_combo.addItem(label, slot)
-        self._set_status(f"{len(enrolled)} impronte per '{user}'.")
+        self._set_status(f"{len(enrolled)} fingerprints for '{user}'.")
 
     @Slot()
     def start_enroll(self) -> None:
         if self.busy_op or not self.dev_path:
             return
         if self.finger_combo.count() == 0:
-            self._set_status("Tutti i diti sono già registrati.")
+            self._set_status("All fingers are already enrolled.")
             return
         slot = self.finger_combo.currentData()
         if not self._claim():
@@ -254,20 +254,20 @@ class FingerprintManager(QMainWindow):
             return
         self.busy_op = "enroll"
         self.enroll_done = 0
-        # Il numero di stadi puo' cambiare (il driver chiude prima quando la
-        # copertura converge): rileggilo a ogni registrazione.
+        # The number of stages can change (the driver ends early once coverage
+        # converges): read it again on every enrollment.
         self.enroll_total = int(self._get_prop("num-enroll-stages") or self.enroll_total)
         self.progress.setMaximum(max(self.enroll_total, 1))
         self.progress.setValue(0)
         self.progress.setVisible(True)
         self._set_busy_ui(True)
-        self._set_status("Appoggia il dito sul sensore e segui le indicazioni…")
+        self._set_status("Place your finger on the sensor and follow the instructions…")
 
     @Slot()
     def start_verify(self) -> None:
         if self.busy_op or not self.dev_path:
             return
-        # Verifica contro un dito selezionato, o 'any' se nessuna selezione.
+        # Verify against the selected finger, or 'any' if nothing is selected.
         item = self.finger_list.currentItem()
         finger = item.data(Qt.UserRole) if item else "any"
         if not self._claim():
@@ -279,7 +279,7 @@ class FingerprintManager(QMainWindow):
             return
         self.busy_op = "verify"
         self._set_busy_ui(True)
-        self._set_status("Appoggia il dito per la verifica…")
+        self._set_status("Place your finger to verify…")
 
     @Slot()
     def cancel_op(self) -> None:
@@ -287,7 +287,7 @@ class FingerprintManager(QMainWindow):
             self._device().call("EnrollStop")
         elif self.busy_op == "verify":
             self._device().call("VerifyStop")
-        self._finish_op("Annullato.")
+        self._finish_op("Cancelled.")
 
     @Slot()
     def delete_selected(self) -> None:
@@ -305,8 +305,8 @@ class FingerprintManager(QMainWindow):
     def delete_all(self) -> None:
         if self.busy_op:
             return
-        if QMessageBox.question(self, "Conferma",
-                                "Eliminare TUTTE le impronte di questo utente?") \
+        if QMessageBox.question(self, "Confirm",
+                                "Delete ALL fingerprints of this user?") \
                 != QMessageBox.Yes:
             return
         if not self._claim():
@@ -315,7 +315,7 @@ class FingerprintManager(QMainWindow):
         self._release()
         self.refresh_list()
 
-    # ---------------- Segnali fprintd ----------------
+    # ---------------- fprintd signals ----------------
     @Slot(str, bool)
     def on_enroll_status(self, result: str, done: bool) -> None:
         if self.busy_op != "enroll":
@@ -328,11 +328,11 @@ class FingerprintManager(QMainWindow):
         if done:
             ok = result == "enroll-completed"
             if ok:
-                # L'ultimo stadio arriva come enroll-completed (non stage-passed),
-                # e con la convergenza di copertura il totale non viene raggiunto.
+                # The last stage arrives as enroll-completed (not stage-passed),
+                # and when coverage converges the total is never reached.
                 self.progress.setValue(self.progress.maximum())
             self._device().call("EnrollStop")
-            self._finish_op("Impronta registrata ✓" if ok else f"Enroll: {hint}")
+            self._finish_op("Fingerprint enrolled ✓" if ok else f"Enroll: {hint}")
             self.refresh_list()
 
     @Slot(str, bool)
@@ -345,7 +345,7 @@ class FingerprintManager(QMainWindow):
             self._device().call("VerifyStop")
             self._finish_op(hint)
 
-    # ---------------- Helper UI ----------------
+    # ---------------- UI helpers ----------------
     def _finish_op(self, msg: str) -> None:
         was_enroll = self.busy_op == "enroll"
         self.busy_op = None
@@ -353,7 +353,7 @@ class FingerprintManager(QMainWindow):
         self._set_busy_ui(False)
         self._set_status(msg)
         if was_enroll:
-            # Lascia vedere il 100% un istante, poi togli la barra.
+            # Show 100% for a moment, then remove the bar.
             QTimer.singleShot(1500, self._hide_progress)
 
     def _hide_progress(self) -> None:
@@ -378,7 +378,7 @@ class FingerprintManager(QMainWindow):
         self.status.setText(text)
 
     def _error(self, where: str, msg: str) -> None:
-        self._set_status(f"Errore {where}: {msg}")
+        self._set_status(f"Error {where}: {msg}")
 
     def closeEvent(self, event) -> None:  # noqa: N802
         try:

@@ -1,85 +1,102 @@
-# Matching con SIGFM: storia del laboratorio
+# Matching with SIGFM: the lab history
 
-> Questa pagina racconta come si è arrivati al matcher, nel laboratorio Python
-> (`lab/`). Il comportamento attuale, i risultati misurati e le difese sono in
-> [`how-it-works.md`](how-it-works.md); l'implementazione è in
-> `goodixfpd/src/core/goodix_sift.c` e `goodix_match.c`.
+> This page tells how the matcher came about, in the Python lab (`lab/`). The
+> current behaviour, the measured results and the defences are in
+> [`how-it-works.md`](how-it-works.md); the implementation is in
+> `goodixfpd/src/core/goodix_sift.c` and `goodix_match.c`.
 
-Il riconoscimento usa **SIGFM** ("SIFT Is Good For Matching"), l'algoritmo di
-goodix-fp-linux-dev pensato proprio per sensori 64x80. Port fedele in `lab/sigfm.py`
-(da `cpp/match.cpp`/`compute.cpp` del repo upstream), template multi-frame in `lab/template.py`.
+Recognition uses **SIGFM** ("SIFT Is Good For Matching"), the
+goodix-fp-linux-dev algorithm designed precisely for 64x80 sensors. Faithful
+port in `lab/sigfm.py` (from `cpp/match.cpp`/`compute.cpp` of the upstream
+repository), multi-frame template in `lab/template.py`.
 
-## Perche' la prima versione (RANSAC) falliva
+## Why the first version (RANSAC) failed
 
-Il primo tentativo (`lab/match.py`) usava SIFT + `findHomography(RANSAC)`: fit di UNA
-trasformazione globale, score = n. inlier. Su 64x64 con pochi match rumorosi RANSAC non fitta
-nulla di stabile -> score 0 sia per genuino sia per impostore, nessuna soglia separa.
+The first attempt (`lab/match.py`) used SIFT + `findHomography(RANSAC)`: a fit
+of ONE global transformation, score = number of inliers. On 64x64 with few
+noisy matches RANSAC fits nothing stable -> score 0 for both genuine and
+impostor, no threshold separates them.
 
-SIGFM invece fa un **voto geometrico a coppie, invariante a rotazione e scala**:
-1. SIFT + ratio test di Lowe (0.75) -> match tentativi.
-2. per ogni coppia di match, se la distanza tra i keypoint e' conservata entro il 5%
-   (LENGTH_MATCH) registra un "angolo" (sin/cos della rotazione relativa).
-3. per ogni coppia di angoli, se sin e cos coincidono entro il 5% (ANGLE_MATCH) +1 allo score.
+SIGFM instead does **pairwise geometric voting, invariant to rotation and
+scale**:
+1. SIFT + Lowe's ratio test (0.75) -> tentative matches.
+2. for every pair of matches, if the distance between the keypoints is
+   preserved within 5% (LENGTH_MATCH) it records an "angle" (sin/cos of the
+   relative rotation).
+3. for every pair of angles, if sin and cos agree within 5% (ANGLE_MATCH), +1
+   to the score.
 
-Lo score e' il conteggio combinatorio di coppie coerenti: enorme per lo stesso dito con
-sovrapposizione, ~0 per dita diverse. Degrada con grazia (anche overlap parziale lascia un
-cluster coerente), al contrario del fit a omografia singola.
+The score is the combinatorial count of consistent pairs: huge for the same
+finger with overlap, ~0 for different fingers. It degrades gracefully (even a
+partial overlap leaves a consistent cluster), unlike a single-homography fit.
 
 ## Preprocessing
 
-`lab/preprocessor.py` (sottrazione baseline clear + normalizzazione per colonna + CLAHE)
-batte nettamente il min-max grezzo del demo upstream. Misurato (template-max, dati reali):
+`lab/preprocessor.py` (clear-frame baseline subtraction + per-column
+normalization + CLAHE) clearly beats the raw min-max of the upstream demo.
+Measured (template max, real data):
 
-| probe                     | min-max grezzo | column-norm + CLAHE |
-|---------------------------|---------------:|--------------------:|
-| A2 (genuino, con overlap) |         36 585 |         **251 661** |
-| B1 (impostore)            |            228 |              **49** |
+| probe                       | raw min-max | column-norm + CLAHE |
+|-----------------------------|------------:|--------------------:|
+| A2 (genuine, with overlap)  |      36 585 |         **251 661** |
+| B1 (impostor)               |         228 |              **49** |
 
-CLAHE rafforza il genuino ~7x e abbatte il leakage impostore ~5x.
+CLAHE strengthens the genuine score ~7x and cuts impostor leakage ~5x.
 
-## Risultati misurati (hardware reale: dito A genuino, dito B impostore)
+## Measured results (real hardware: finger A genuine, finger B impostor)
 
-Template = raffica Aenr_00..09; verify = max score sul template, soglia 300:
+Template = burst Aenr_00..09; verify = max score over the template,
+threshold 300:
 
-- A2 (genuino, cade su una zona coperta) -> **ACCETTATO**, score 251661.
-- B1, Bver (impostore) -> **RIFIUTATO**, score 49 e 0.
-- A1, Aver (genuino, ma zone NON coperte dalla raffica) -> RIFIUTATO, score 0.
+- A2 (genuine, lands on a covered area) -> **ACCEPTED**, score 251661.
+- B1, Bver (impostor) -> **REJECTED**, score 49 and 0.
+- A1, Aver (genuine, but areas NOT covered by the burst) -> REJECTED, score 0.
 
-Velocita': ~1.35 ms medi per confronto (max ~80 ms nel caso combinatorio di immagini
-quasi identiche). Verify con template da 10-15 frame resta ben sotto i 100 ms.
+Speed: ~1.35 ms per comparison on average (max ~80 ms in the combinatorial
+case of nearly identical images). Verification against a 10-15 frame template
+stays well under 100 ms.
 
-## Il vincolo vero: COPERTURA in enroll
+## The real constraint: COVERAGE at enrollment
 
-I falsi rifiuti (A1, Aver) non sono un difetto del matcher: SIGFM trova (giustamente) overlap
-quando c'e' e 0 quando non c'e'. Gli Aenr sono una raffica ravvicinata su una sola zona del
-dito; i tocchi indipendenti che cadono altrove non hanno nulla con cui sovrapporsi.
+The false rejections (A1, Aver) are not a matcher defect: SIGFM (rightly)
+finds overlap when there is some and 0 when there is none. The Aenr frames are
+a tight burst on a single area of the finger; independent touches landing
+elsewhere have nothing to overlap with.
 
-La soluzione e' l'**enrollment guidato per copertura** (stile Windows Hello): 12-15 tocchi
-distribuiti su tutto il polpastrello (punta, sinistra, destra, base, centro), cosi' che ogni
-tocco futuro si sovrapponga ad almeno un frame registrato. Con quel dataset:
-1. ri-costruire il template (`lab/template.py enroll`),
-2. tarare la soglia sulla separazione genuino/impostore reale (ora provvisoria a 300).
+The solution is **coverage-guided enrollment** (Windows Hello style): 12-15
+touches spread over the whole fingertip (tip, left, right, base, centre), so
+that every future touch overlaps at least one enrolled frame. With that data
+set:
+1. rebuild the template (`lab/template.py enroll`),
+2. tune the threshold on the real genuine/impostor separation (provisionally
+   300 for now).
 
-## Prossimo passo operativo
+## Next practical step
 
-Sessione di cattura su hardware (la lancia l'utente): `lab/driver_5125.py --enroll 15 --tag A`
-muovendo il dito per coprire tutta la superficie, poi alcuni tocchi di verifica genuini + un
-paio con un altro dito. Il template e la taratura si fanno offline dai `*_plain.bin` salvati.
+Capture session on the hardware (run by the user):
+`lab/driver_5125.py --enroll 15 --tag A`, moving the finger to cover the whole
+surface, then a few genuine verification touches + a couple with another
+finger. Template and tuning are done offline from the saved `*_plain.bin`
+files.
 
-Il resto della catena (protocollo, provisioning PSK, TLS, acquisizione, decodifica) e' gia'
-verificato e funzionante.
+The rest of the chain (protocol, PSK provisioning, TLS, capture, decoding) is
+already verified and working.
 
-## Mosaico incrementale (riduzione falsi negativi)
+## Incremental mosaic (reducing false negatives)
 
-Su mappatura densa reale (~113 zone): falsi positivi 0 (SIGFM selettivo), ma restano falsi
-negativi quando il tocco di verifica cade in un BUCO di copertura. Le zone adiacenti pero' SI
-REGISTRANO tra loro (roto-traslazione, offset reali 15-50px, rotazioni <6deg): un mosaico di 8
-zone connesse si cuce correttamente con le creste continue.
+On real dense mapping (~113 areas): 0 false positives (SIGFM is selective),
+but false negatives remain when the verification touch lands in a coverage
+HOLE. Adjacent areas, however, DO REGISTER with each other (rotation plus
+translation, real offsets of 15-50 px, rotations < 6°): a mosaic of 8
+connected areas stitches correctly with continuous ridges.
 
-Il limite non e' il dito ma l'enroll a punti: `SAME_SPOT` crea una zona nuova solo quando
-l'overlap e' gia' perso, quindi butta i frame intermedi che servirebbero a cucire (componente
-connessa massima ~8-15 su 113). Soluzione: enroll a MOSAICO INCREMENTALE (`lab/mosaic.py`,
-`lab/mosaic_session.py`): si tiene il flusso denso, ogni frame si registra sulla mappa corrente
-e la estende solo se si aggancia; i buchi (aree dentro l'inviluppo non coperte) emergono dalla
-copertura e guidano la mappatura. La GUI (`lab/enroll_gui.py`) mostra il mosaico live coi buchi
-in rosso. La verifica resta sullo score SIGFM (0 falsi positivi) piu' gli inlier di registrazione.
+The limit is not the finger but point-based enrollment: `SAME_SPOT` creates a
+new area only when the overlap is already lost, so it throws away the
+intermediate frames that would be needed for stitching (largest connected
+component ~8-15 out of 113). Solution: INCREMENTAL MOSAIC enrollment
+(`lab/mosaic.py`, `lab/mosaic_session.py`): the dense stream is kept, every
+frame registers onto the current map and extends it only if it locks; holes
+(uncovered areas inside the envelope) emerge from the coverage and guide the
+mapping. The GUI (`lab/enroll_gui.py`) shows the live mosaic with the holes in
+red. Verification stays on the SIGFM score (0 false positives) plus the
+registration inliers.

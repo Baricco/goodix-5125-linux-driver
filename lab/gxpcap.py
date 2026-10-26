@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Decodifica il traffico Goodix 27c6:5125 da un pcap usbmon (es. QEMU usb-host pcap=).
+"""Decodes Goodix 27c6:5125 traffic from a usbmon pcap (e.g. QEMU usb-host pcap=).
 
-Ricompone i messaggi "message pack" (flags A0/B0/B2) dalle trasferte bulk a 64 byte
-e decodifica i comandi del protocollo (cmd, lunghezza, checksum).
+Reassembles the "message pack" messages (flags A0/B0/B2) from the 64-byte bulk transfers
+and decodes the protocol commands (cmd, length, checksum).
 
-Uso: gxpcap.py capture.pcap [--raw]
+Usage: gxpcap.py capture.pcap [--raw]
 """
 
 import argparse
@@ -30,15 +30,15 @@ COMMANDS = {
 
 
 def read_pcap(path):
-    """Restituisce (t, endpoint, data) per ogni trasferta bulk con dati."""
+    """Returns (t, endpoint, data) for every bulk transfer carrying data."""
     with open(path, "rb") as f:
         gh = f.read(24)
         magic = struct.unpack("<I", gh[:4])[0]
         if magic not in (0xA1B2C3D4, 0xA1B23C4D):
-            sys.exit("formato pcap non supportato")
+            sys.exit("unsupported pcap format")
         linktype = struct.unpack("<I", gh[20:24])[0]
         if linktype not in (189, 220):
-            sys.exit(f"linktype {linktype} non usbmon")
+            sys.exit(f"linktype {linktype} is not usbmon")
         while True:
             rh = f.read(16)
             if len(rh) < 16:
@@ -49,15 +49,15 @@ def read_pcap(path):
             xfer = rec[9]
             ep = rec[10]
             data = rec[USBMON_HDR:]
-            if xfer != 3 or not data:  # solo bulk
+            if xfer != 3 or not data:  # bulk only
                 continue
-            # OUT: dati nel submit; IN: dati nel complete
+            # OUT: data in the submit; IN: data in the complete
             if (ep == EP_OUT and urb_type == "S") or (ep == EP_IN and urb_type == "C"):
                 yield ts + tus / 1e6, ep, data
 
 
 def split_messages(chunks):
-    """Ricompone i message pack da una sequenza di trasferte della stessa direzione."""
+    """Reassembles the message packs from a sequence of transfers in the same direction."""
     pending = None
     for t, data in chunks:
         if pending is None:
@@ -98,7 +98,7 @@ def describe_protocol(payload):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("pcap")
-    ap.add_argument("--max", type=int, default=96, help="byte di payload mostrati")
+    ap.add_argument("--max", type=int, default=96, help="payload bytes shown")
     args = ap.parse_args()
 
     out_chunks, in_chunks = [], []
@@ -107,7 +107,7 @@ def main():
         return
     t0 = events[0][0]
     msgs = []
-    # Ricomposizione separata per direzione mantenendo il tempo del primo frammento
+    # Separate reassembly per direction, keeping the time of the first fragment
     for ep, store in ((EP_OUT, out_chunks), (EP_IN, in_chunks)):
         for t, e, d in events:
             if e == ep:

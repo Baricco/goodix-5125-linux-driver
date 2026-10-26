@@ -1,34 +1,42 @@
-/* goodix_capture.c - 图像采集（POV 唤醒路径 + 手指判别图像路径 + 基线采样）。
+/* goodix_capture.c - image capture (POV wake-up path + finger-detection
+ * image path + baseline sampling).
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
- * 架构说明（对照参考实现行为 + ST411SEC 固件交互确认）：
- *   - 本机 chipid 0x2504 -> sensor type 12 (ChicagoH)，SetMode 是真实
- *     命令（早期"ST32 ops 全 dummy"的结论只适用于 ST32/MilanG 分支）。
- *   - 采集触发：发送 FDT-down 设置命令
- *     (3,1,1) "Fdt down" -> 发 cmd0=3 cmd1=1 (0x32)，
- *     恒 a3=1：data=[8,1,fdt_down_base(12B),ts16] 共 16 字节。
- *     （a3=0 的 4 字节形态 [8,0,tbl0,tbl1] 只在基线采样失败、
- *     无任何基线时由基线存在性检查兜底使用。）
- *   - 基线来源：init 期基线采样发
- *     FDT-manual (cmd0=3 cmd1=3 = 0x36, data=[9,1,12B 表])，MCU 现场
- *     采样无手指基线并推 cmd0=3 IrqStatus=0x100 帧，host 学为 down 表
- *     （down 表：((raw>>1)<<8)|0x80）。之后手指触碰时 MCU 先推
- *     cmd0=3 FDT 事件帧（IrqStatus=2 finger-down，顺带学 up 表），
- *     再推 cmd0=2 的图像帧。
- *   - POV 路径：MCU state bit0(isPOVImageValid)=1 时发 0xD2 {0,0}
- *     （POV 唤醒命令）取省电唤醒时缓存的图像。
- *   - 通道（USB 数据帧 state>=16）：TLS 激活后 A0 明文帧照常直接
- *     分流，B0 帧经 OpenSSL 解密后再分流同一 payload 格式——两边都
- *     可能出现 FDT/图像帧，必须混合接收。
+ * Architecture notes (checked against the reference implementation's
+ * behaviour + interaction with the ST411SEC firmware):
+ *   - this unit's chipid 0x2504 -> sensor type 12 (ChicagoH); SetMode is a
+ *     real command (the early conclusion "ST32 ops are all dummies" applies
+ *     only to the ST32/MilanG branch).
+ *   - capture trigger: send the FDT-down set command
+ *     (3,1,1) "Fdt down" -> cmd0=3 cmd1=1 (0x32),
+ *     always a3=1: data=[8,1,fdt_down_base(12B),ts16], 16 bytes in total.
+ *     (The 4-byte a3=0 form [8,0,tbl0,tbl1] is only the fallback of the
+ *     baseline presence check, when baseline sampling failed and there is
+ *     no baseline at all.)
+ *   - baseline source: init-time baseline sampling sends
+ *     FDT-manual (cmd0=3 cmd1=3 = 0x36, data=[9,1,12B table]); the MCU
+ *     samples the no-finger baseline on the spot and pushes a cmd0=3
+ *     IrqStatus=0x100 frame, which the host learns as the down table
+ *     (down table: ((raw>>1)<<8)|0x80). Later, when a finger touches, the
+ *     MCU first pushes a cmd0=3 FDT event frame (IrqStatus=2 finger-down,
+ *     also used to learn the up table), then a cmd0=2 image frame.
+ *   - POV path: when MCU state bit0 (isPOVImageValid)=1, send 0xD2 {0,0}
+ *     (POV wake-up command) to fetch the image cached during the
+ *     power-saving wake-up.
+ *   - channel (USB data frames, state>=16): once TLS is active, A0 plaintext
+ *     frames are still dispatched directly, and B0 frames are decrypted by
+ *     OpenSSL and dispatched with the same payload format - FDT/image frames
+ *     can show up on either side, so both must be received together.
  *
- * 设备数据 payload（== USB 帧去掉 4 字节头）：
- *   payload[0]   = cmd 字节 (cmd0<<4|cmd1<<1|more)
- *   payload[1:2] = 数据长度 v19 (LE), 数据从 [3] 起
- *   payload[3..] = data[0..] : data[0]=0xAA(POV)/非0xAA(图像)
- *                  图像像素 = data[5 ..], 长度 v19-6 (== img_size)
- *   末字节       = 校验和 (0x88 => 跳过校验, 否则累加和==0xAA)
+ * Device data payload (== USB frame without its 4-byte header):
+ *   payload[0]   = cmd byte (cmd0<<4|cmd1<<1|more)
+ *   payload[1:2] = data length v19 (LE), data from [3] on
+ *   payload[3..] = data[0..] : data[0]=0xAA (POV) / not 0xAA (image)
+ *                  image pixels = data[5 ..], length v19-6 (== img_size)
+ *   last byte    = checksum (0x88 => skip the check, otherwise sum == 0xAA)
  *
- * 判定图像帧只查 cmd0==2 (设备数据)，不查 cmd1/more。
+ * An image frame is recognized by cmd0==2 (device data) only, cmd1/more are
+ * not checked.
  */
 #include <string.h>
 #include <stdlib.h>
@@ -36,7 +44,7 @@
 #include <sys/time.h>
 #include "goodix.h"
 
-/* CRC 校验：数据字节累加和必须等于 0xAA */
+/* CRC check: the sum of the data bytes must equal 0xAA */
 static int verify_crc(const uint8_t *data, uint16_t len)
 {
     uint8_t s = 0;
@@ -45,19 +53,21 @@ static int verify_crc(const uint8_t *data, uint16_t len)
     return s == 0xAA ? 0 : -1;
 }
 
-/* ---- 线上图像 CRC-32（图像数据 CRC-32 计算）----
- * 与 goodix.dat 同一个 CRC-32/MPEG-2（poly 0x04C11DB7，初值 FFFFFFFF，
- * 无最终异或），查表实现见 goodix_crc.c。图像数据末尾 4 字节是 CRC，
- * 存储序是每 16 位半字大端、半字间小端：crc = b1|b0<<8 | b3<<16|b2<<24。 */
+/* ---- on-wire image CRC-32 (CRC-32 of the image data) ----
+ * The same CRC-32/MPEG-2 as goodix.dat (poly 0x04C11DB7, initial value
+ * FFFFFFFF, no final XOR), table implementation in goodix_crc.c. The last 4
+ * bytes of the image data are the CRC, stored with each 16-bit half-word big
+ * endian and the half-words little endian: crc = b1|b0<<8 | b3<<16|b2<<24. */
 
-/* ---- 12bit 解包 + 转置（列优先像素解包）----
- * 线上 6 字节打包 4 个 12bit 像素；像素流是按列优先（每列 64px）发送的，
- * 解包时转置成行优先 80x64、每像素 16bit（值左对齐在低 12bit）。
- * in: 7680B packed；out: 10240B (80*64*2)。 */
+/* ---- 12-bit unpacking + transposition (column-major pixel unpacking) ----
+ * On the wire 6 bytes pack 4 12-bit pixels; the pixel stream is sent column
+ * by column (64 px per column) and is transposed while unpacking into a
+ * row-major 80x64 image, 16 bits per pixel (value in the low 12 bits).
+ * in: 7680B packed; out: 10240B (80*64*2). */
 static void unpack_12bit_transpose(const uint8_t *in, uint8_t *out,
                                    unsigned int packed_len)
 {
-    uint32_t k = 0;                         /* 线序像素号 */
+    uint32_t k = 0;                         /* pixel number in wire order */
     for (unsigned int j = 0; j < packed_len; j += 6) {
         uint16_t p0 = (uint16_t)(in[j + 1] + ((in[j] & 0xF) << 8));
         uint16_t p1 = (uint16_t)((in[j] >> 4) + 16 * in[j + 3]);
@@ -65,25 +75,31 @@ static void unpack_12bit_transpose(const uint8_t *in, uint8_t *out,
         uint16_t p3 = (uint16_t)((in[j + 5] >> 4) + 16 * in[j + 4]);
         uint16_t px[4] = { p0, p1, p2, p3 };
         for (int t = 0; t < 4; t++, k++) {
-            uint32_t dst = k / 64 + 80 * (k % 64);   /* 转置: 列->行 */
+            uint32_t dst = k / 64 + 80 * (k % 64);   /* transpose: column -> row */
             out[2 * dst] = (uint8_t)px[t];
             out[2 * dst + 1] = (uint8_t)(px[t] >> 8);
         }
     }
 }
 
-/* ---------------- 主机侧手指判别 ----------------
- * 新帧与无手指基线图像（d->img_base，全局基线图）做 8x8 分块
- * 统计比较；参数按 sensor type 装填（解析 OTP 后初始化）：
- *   - 网格: brows x bcols 个 8x8 块，块起点查 row_off/col_off 表
- *   - 阈值 T = tcode*16*delta/tdiv（tcode/delta 来自 OTP，tdiv 按 type）
- *   - need = 判别成立所需的高变块数
- * 判定树（a2=基线、a3=新帧）：
- *   v38(高变块数) >= need          -> 新帧显著变亮且基线不变亮 ?
- *                                     3(bad) : 1(finger)
- *   任意块 mean|diff| > 1.4T       -> 新帧块均值比基线亮 1.4T ? 3 : 1
- *   中差异块数(0.6T<d<1.4T) < need -> 2(void 空触发)
- *   否则                           -> 0(temperature 温度漂移, 需重建基线) */
+/* ---------------- host-side finger detection ----------------
+ * The new frame is compared with the no-finger baseline image (d->img_base,
+ * the global baseline image) through 8x8 block statistics; the parameters
+ * depend on the sensor type (initialized after OTP parsing):
+ *   - grid: brows x bcols 8x8 blocks, block origins from the row_off/col_off
+ *     tables
+ *   - threshold T = tcode*16*delta/tdiv (tcode/delta from the OTP, tdiv per
+ *     type)
+ *   - need = number of high-variance blocks required for a decision
+ * Decision tree (a2 = baseline, a3 = new frame):
+ *   v38 (high-variance blocks) >= need -> new frame much brighter and the
+ *                                         baseline not brighter ?
+ *                                         3(bad) : 1(finger)
+ *   any block mean|diff| > 1.4T        -> new block mean 1.4T brighter than
+ *                                         the baseline ? 3 : 1
+ *   mid-difference blocks (0.6T<d<1.4T) < need -> 2(void trigger)
+ *   otherwise                          -> 0(temperature drift, the baseline
+ *                                         must be rebuilt) */
 struct fdt_disc_params {
     uint8_t need, brows, bcols;
     uint8_t row_off[5], col_off[5];
@@ -116,10 +132,10 @@ static inline uint16_t px16(const uint8_t *img, uint32_t idx)
     return (uint16_t)(img[2 * idx] | (img[2 * idx + 1] << 8));
 }
 
-/* 手指判别的 mode-0 路径（a1+4==0，8x8 块网格）。
- * 参数对应：a2=基线(base)、a3=新帧(new)；本函数 img=new，
- * d->img_base=base。
- * 返回 1=finger / 2=void / 3=bad / 0=temperature / -1=无法判别。 */
+/* mode-0 path of finger detection (a1+4==0, 8x8 block grid).
+ * Parameters: a2 = baseline (base), a3 = new frame (new); in this function
+ * img = new, d->img_base = base.
+ * Returns 1=finger / 2=void / 3=bad / 0=temperature / -1=cannot decide. */
 int gx_fdt_check_finger(struct goodix_dev *d, const uint8_t *img)
 {
     const struct fdt_disc_params *p = fdt_disc_params(d->sensor_type);
@@ -128,7 +144,7 @@ int gx_fdt_check_finger(struct goodix_dev *d, const uint8_t *img)
     if (d->img_w != p->w || d->img_h != p->h)
         return -1;
 
-    /* 阈值（tcode*16*delta/tdiv，整数运算） */
+    /* threshold (tcode*16*delta/tdiv, integer arithmetic) */
     uint32_t t = (uint32_t)d->fdt_tcode * 16u * d->fdt_delta / p->tdiv;
     int hi = (int)(t * 1.4);            /* (int)(double(T)*1.4) */
     int lo = (int)(t * 0.6);
@@ -138,17 +154,19 @@ int gx_fdt_check_finger(struct goodix_dev *d, const uint8_t *img)
     for (uint8_t br = 0; br < p->brows; br++) {
         for (uint8_t bc = 0; bc < p->bcols; bc++) {
             uint32_t sum_new = 0, sum_base = 0, sum_diff = 0;
-            /* 单遍扫描：像素差异缓存到 di[]（64 像素，|a-b| <= 4095 有符号
-             * 16bit 可容纳），第二遍方差直接读缓存，避免把两幅图像各重读
-             * 一遍。运算顺序与原两遍实现完全一致，结果逐位相同。 */
+            /* Single pass: pixel differences are cached in di[] (64 pixels,
+             * |a-b| <= 4095 fits in a signed 16-bit value), and the second
+             * (variance) pass reads the cache instead of rereading both
+             * images. The order of operations is exactly that of the original
+             * two-pass implementation, and the results are bit-identical. */
             int16_t di[64];
             uint32_t di_n = 0;
             for (uint8_t m = 0; m < 8; m++) {
                 for (uint8_t n = 0; n < 8; n++) {
                     uint32_t idx = (uint32_t)p->w * (m + p->row_off[br])
                                    + n + p->col_off[bc];
-                    uint16_t a = px16(d->img_base, idx);/* 基线 (a2) */
-                    uint16_t b = px16(img, idx);        /* 新帧 (a3) */
+                    uint16_t a = px16(d->img_base, idx);/* baseline (a2) */
+                    uint16_t b = px16(img, idx);        /* new frame (a3) */
                     int16_t diff = (int16_t)((a > b) ? (a - b) : (b - a));
                     sum_base += a;
                     sum_new += b;
@@ -156,10 +174,10 @@ int gx_fdt_check_finger(struct goodix_dev *d, const uint8_t *img)
                     di[di_n++] = diff;
                 }
             }
-            uint32_t mean_base = sum_base / 64;         /* 块均值（偏移 +56） */
-            uint32_t mean_new = sum_new / 64;           /* 块均值（偏移 +64） */
-            uint32_t mean_diff = sum_diff / 64;         /* 块均值（偏移 +72） */
-            /* 块内差异方差（+80）：Σ(mean_d - d_i)^2 / 63 */
+            uint32_t mean_base = sum_base / 64;         /* block mean (offset +56) */
+            uint32_t mean_new = sum_new / 64;           /* block mean (offset +64) */
+            uint32_t mean_diff = sum_diff / 64;         /* block mean (offset +72) */
+            /* variance of the in-block differences (+80): Σ(mean_d - d_i)^2 / 63 */
             uint64_t var = 0;
             for (uint32_t k = 0; k < 64; k++) {
                 int dd = (int)mean_diff - (int)di[k];
@@ -172,21 +190,24 @@ int gx_fdt_check_finger(struct goodix_dev *d, const uint8_t *img)
                 v39 = 1;
             if ((int)mean_diff < hi && (int)mean_diff > lo)
                 v40++;
-            /* v41：新帧块均值比基线亮 hi 以上（+64 > +56 + 1.4T） */
+            /* v41: new block mean brighter than the baseline by more than hi
+             * (+64 > +56 + 1.4T) */
             if (mean_new > mean_base + (uint32_t)hi)
                 v41 = 1;
         }
     }
 
-    /* 内部像素方向统计（去边框，内部像素扫描）：
-     * v53 = 新帧比基线亮 32+ 的像素数（a3 > a2+32）
-     * v54 = 基线比新帧亮 32+ 的像素数（a2 > a3+32） */
+    /* Inner pixel direction statistics (border excluded, inner pixel scan):
+     * v53 = pixels where the new frame is 32+ brighter than the baseline
+     *       (a3 > a2+32)
+     * v54 = pixels where the baseline is 32+ brighter than the new frame
+     *       (a2 > a3+32) */
     uint32_t v53 = 0, v54 = 0;
     for (uint16_t r = 1; r < p->h - 1; r++) {
         for (uint16_t c = 1; c < p->w - 1; c++) {
             uint32_t idx = (uint32_t)c + p->w * r;
-            uint16_t a = px16(d->img_base, idx);        /* 基线 */
-            uint16_t b = px16(img, idx);                /* 新帧 */
+            uint16_t a = px16(d->img_base, idx);        /* baseline */
+            uint16_t b = px16(img, idx);                /* new frame */
             if (b > a + 32)
                 v53++;
             if (a > b + 32)
@@ -194,14 +215,15 @@ int gx_fdt_check_finger(struct goodix_dev *d, const uint8_t *img)
         }
     }
     uint32_t plim = (uint32_t)((p->w * p->h - 2 * (p->w + p->h) + 4) * 0.1);
-    int v51 = v53 >= plim;      /* 新帧整体显著变亮 */
-    int v52 = v54 >= plim;      /* 基线整体显著更亮 */
+    int v51 = v53 >= plim;      /* new frame much brighter overall */
+    int v52 = v54 >= plim;      /* baseline much brighter overall */
 
-    /* 判定树：
+    /* Decision tree:
      *   v38>=need: (!v51 || v52) ? 1 : 3
-     *     —— 只有"新帧显著变亮且基线不变亮"才是 bad，其余结构化差异=finger
-     *   v39:       v41 ? 3 : 1  —— 新帧异常变亮=bad
-     *   v40<need:  2(void)；否则 0(temperature) */
+     *     -- only "new frame much brighter and the baseline not brighter" is
+     *        bad, any other structured difference = finger
+     *   v39:       v41 ? 3 : 1  -- an abnormally brighter new frame = bad
+     *   v40<need:  2(void); otherwise 0(temperature) */
     int ret;
     if (v38 >= p->need)
         ret = (v51 && !v52) ? 3 : 1;
@@ -219,14 +241,16 @@ int gx_fdt_check_finger(struct goodix_dev *d, const uint8_t *img)
     return ret;
 }
 
-/* 解析一条设备数据 payload，提取图像帧。
+/* Parses one device data payload and extracts an image frame.
  * payload[0]=cmd, [1:2]=v19, [3..]=data.
- * （设备数据）: 图像 == cmd0==2, cmd1/more 不检查;
- * data[0]==0xAA 是 POV 帧直接跳过; 图像数据在 data[5..], 长度 v19-6。
- * type 12 线上格式（图像数据）：
- *   data[5..5+7680) = 12bit packed 像素（列优先），随后 4B CRC-32/MPEG-2；
- *   校验 CRC 后解包转置成 80x64x16bit 帧（10240B）。
- * 返回 0 + 解包后的 16bit 帧（大小 *size）。 */
+ * (device data): image == cmd0==2, cmd1/more not checked;
+ * data[0]==0xAA is a POV frame and is skipped; image data in data[5..],
+ * length v19-6.
+ * On-wire format of type 12 (image data):
+ *   data[5..5+7680) = 12-bit packed pixels (column major), followed by a 4B
+ *   CRC-32/MPEG-2; after the CRC check they are unpacked and transposed into
+ *   an 80x64x16-bit frame (10240B).
+ * Returns 0 + the unpacked 16-bit frame (size in *size). */
 static int parse_image_payload(const uint8_t *p, uint16_t plen,
                                uint8_t *img, uint16_t cap, uint16_t *size)
 {
@@ -238,20 +262,22 @@ static int parse_image_payload(const uint8_t *p, uint16_t plen,
         return -1;
     const uint8_t *data = &p[3];   /* data[0..v19-1] */
     if (cmd0 != 2)
-        return -1;                 /* 不是图像帧（仅 cmd0==2） */
+        return -1;                 /* not an image frame (only cmd0==2 is) */
     if (data[0] == 0xAA)
-        return -1;                 /* POV 帧 - 非图像像素 */
+        return -1;                 /* POV frame - not image pixels */
     uint16_t ilen = (uint16_t)(v19 - 6);
     if (ilen < 2)
         return -1;
-    /* 尾部校验和字节：data[v19-1]；0x88 => 跳过，否则累加和==0xAA */
+    /* trailing checksum byte: data[v19-1]; 0x88 => skip, otherwise sum == 0xAA */
     if (data[v19 - 1] != GF_NO_CHECK) {
         if (verify_crc(&data[5], ilen) != 0)
             return -1;
     }
-    const uint8_t *w = &data[5];   /* 线上图像：打包像素 + crc32 */
-    /* 线上格式：末 4 字节 CRC-32（crc32(payload[0..ilen-4])），
-     * 半字大端存储。校验失败只告警不拒收（参考实现是拒收重等）。 */
+    const uint8_t *w = &data[5];   /* on-wire image: packed pixels + crc32 */
+    /* On-wire format: the last 4 bytes are the CRC-32
+     * (crc32(payload[0..ilen-4])), stored as big-endian half-words. A failed
+     * check only warns and the frame is kept (the reference implementation
+     * rejects it and waits again). */
     if (ilen >= 10 && ((ilen - 4) % 6) == 0) {
         uint32_t cw = (uint32_t)w[ilen - 3] | ((uint32_t)w[ilen - 4] << 8) |
                       ((uint32_t)w[ilen - 1] << 16) | ((uint32_t)w[ilen - 2] << 24);
@@ -267,7 +293,7 @@ static int parse_image_payload(const uint8_t *p, uint16_t plen,
             return 0;
         }
     }
-    /* 非打包格式（其它 sensor）：原样交付 */
+    /* unpacked format (other sensors): delivered as is */
     if (ilen > cap)
         return -1;
     if (img)
@@ -277,12 +303,12 @@ static int parse_image_payload(const uint8_t *p, uint16_t plen,
     return 0;
 }
 
-/* 图像预处理（16bit -> 8bit）在 goodix_imgproc.c 实现：参数化管线
- * gx_imgproc_to8bit + SIGFM 反锐化增强，声明见 goodix_imgproc.h（goodix.h
- * 末尾 include）。 */
+/* Image preprocessing (16 bit -> 8 bit) lives in goodix_imgproc.c: the
+ * parameterized pipeline gx_imgproc_to8bit + SIGFM unsharp-mask enhancement,
+ * declared in goodix_imgproc.h (included at the end of goodix.h). */
 
-/* POV（手指存在）通知帧：cmd0=13 cmd1=1, data[0]=0xAA
- * （POV 等待过程中用于上报手指事件）。 */
+/* POV (finger present) notification frame: cmd0=13 cmd1=1, data[0]=0xAA
+ * (used to report finger events while waiting for POV). */
 static int is_pov_frame(const uint8_t *p, uint16_t plen)
 {
     if (plen < 4)
@@ -290,8 +316,8 @@ static int is_pov_frame(const uint8_t *p, uint16_t plen)
     return (p[0] >> 4) == 13 && ((p[0] >> 1) & 0x7) == 1 && p[3] == 0xAA;
 }
 
-/* 设备主动发起的 TLS 重连请求：cmd0=13 cmd1=5 (0xDA).
- * 设备数据帧中据此触发 TLS 服务端重连。 */
+/* TLS reconnection requested by the device: cmd0=13 cmd1=5 (0xDA).
+ * In device data frames it triggers a TLS server reconnection. */
 static int is_tls_reconnect_req(const uint8_t *p, uint16_t plen)
 {
     if (plen < 1)
@@ -299,10 +325,11 @@ static int is_tls_reconnect_req(const uint8_t *p, uint16_t plen)
     return (p[0] >> 4) == 13 && ((p[0] >> 1) & 0x7) == 5;
 }
 
-/* FDT/IRQ 推送帧：cmd0=3（设备数据 "--- cmd: fdt"）。
- * data[0:1] = IrqStatus (2=fdt-down 手指触碰,
- * 0x100=fdt-manual 采样回报, 0x200=fdt-up, 0x80/0x82=reverse, 0x800=fp reset)。
- * 返回 IrqStatus；非 FDT 帧返回 -1。 */
+/* FDT/IRQ push frame: cmd0=3 (device data "--- cmd: fdt").
+ * data[0:1] = IrqStatus (2=fdt-down finger touch,
+ * 0x100=fdt-manual sample report, 0x200=fdt-up, 0x80/0x82=reverse,
+ * 0x800=fp reset).
+ * Returns the IrqStatus; -1 for non-FDT frames. */
 static int fdt_irq_status(const uint8_t *p, uint16_t plen)
 {
     if (plen < 5)
@@ -312,11 +339,11 @@ static int fdt_irq_status(const uint8_t *p, uint16_t plen)
     return p[3] | (p[4] << 8);
 }
 
-/* 处理 FDT 事件帧并顺手完成基线学习：
- * data = payload+3：[IrqStatus 2B][touchflag 2B][raw base 12B]。
- * IrqStatus=2     (手指按下) -> 学习 up 表
- * IrqStatus=0x200 (手指抬起) -> 学习 down 表
- * IrqStatus=0x100 (manual)   -> 由 gx_fdt_sample_base 自己处理 */
+/* Handles an FDT event frame and learns the baseline on the way:
+ * data = payload+3: [IrqStatus 2B][touchflag 2B][raw base 12B].
+ * IrqStatus=2     (finger down) -> learn the up table
+ * IrqStatus=0x200 (finger up)   -> learn the down table
+ * IrqStatus=0x100 (manual)      -> handled by gx_fdt_sample_base itself */
 static void handle_fdt_frame(struct goodix_dev *d, const uint8_t *p,
                              uint16_t plen, int irq)
 {
@@ -334,11 +361,13 @@ static void handle_fdt_frame(struct goodix_dev *d, const uint8_t *p,
         gx_fdt_learn_up_base(d, data + 4, touchflag);
     else if (irq == 0x200)
         gx_fdt_learn_down_base(d, data + 4);
-    /* 事件回调（libfprint 对接：手指按下/抬起状态上报）。
-     * 2/0x80/0x82 = 手指按下：0x80/0x82 "reverse" 也是真实触碰，必须上报
-     * PRESENT 让 libfprint 进入 CAPTURE 态，否则交付图像时
-     * fpi_image_device_image_captured 的 state==CAPTURE 断言失败（卡死）。
-     * 基线不从 reverse 帧学习（上面只在 2/0x200 学 up/down 表）。 */
+    /* Event callback (libfprint glue: reporting finger down/up).
+     * 2/0x80/0x82 = finger down: 0x80/0x82 "reverse" are real touches too and
+     * must be reported as PRESENT so libfprint enters the CAPTURE state,
+     * otherwise delivering the image fails the state==CAPTURE assertion of
+     * fpi_image_device_image_captured (hang).
+     * The baseline is not learned from reverse frames (above, the up/down
+     * tables are learned only on 2/0x200). */
     if (d->event_cb) {
         if (irq == 2 || irq == 0x80 || irq == 0x82)
             d->event_cb(d, GX_EV_FINGER_DOWN, d->event_cb_user);
@@ -361,14 +390,18 @@ void gx_capture_cancel(struct goodix_dev *d)
     d->capture_stop = 1;
 }
 
-/* ---------------- 混合通道 payload 读取 ----------------
- * TLS 激活后 A0 明文帧直接分流到设备数据处理，B0 帧 ssl_read 解密后
- * 同样分流。明文帧整帧即一条 payload；TLS 解密数据是字节流，需要先
- * 攒出完整 payload（cmd+v19+data）。
- * 聚合缓冲（d->rx_acc / d->rx_acc_len）是设备状态的一部分（见 goodix.h），
- * 采集路径单线程访问，但挂在设备上保证多设备/重入安全。 */
+/* ---------------- mixed-channel payload reading ----------------
+ * Once TLS is active, A0 plaintext frames are dispatched directly to device
+ * data processing, and B0 frames are dispatched the same way after ssl_read
+ * decryption. A plaintext frame is one whole payload; TLS-decrypted data is a
+ * byte stream and must first be collected into a complete payload
+ * (cmd+v19+data).
+ * The aggregation buffer (d->rx_acc / d->rx_acc_len) is part of the device
+ * state (see goodix.h); the capture path accesses it from a single thread,
+ * but keeping it in the device makes multiple devices/reentrancy safe. */
 
-/* 从聚合缓冲取一条完整 payload；取到返回 1 */
+/* takes one complete payload from the aggregation buffer; returns 1 if it
+ * got one */
 static int acc_take(struct goodix_dev *d, uint8_t *out, uint16_t *outlen,
                     uint16_t cap)
 {
@@ -392,14 +425,15 @@ static int acc_take(struct goodix_dev *d, uint8_t *out, uint16_t *outlen,
     return total <= cap;
 }
 
-/* 读下一条设备数据 payload。
- * 明文 A0/C0 帧：payload = frame[4..flen) 直接返回；
- * B0 帧：注入 TLS（gx_tls_feed），取出解密字节流进聚合缓冲。
- * 返回 1 = 拿到 payload；0 = 超时；-1 = TLS 通道错误。 */
+/* Reads the next device data payload.
+ * Plaintext A0/C0 frames: payload = frame[4..flen) returned directly;
+ * B0 frames: injected into TLS (gx_tls_feed), the decrypted byte stream goes
+ * into the aggregation buffer.
+ * Returns 1 = got a payload; 0 = timeout; -1 = TLS channel error. */
 static int next_payload(struct goodix_dev *d, uint8_t *out, uint16_t *outlen,
                         uint16_t cap, int tmo_ms)
 {
-    uint8_t *frame = d->rx_frame;   /* 设备级帧重组缓冲（见 goodix.h） */
+    uint8_t *frame = d->rx_frame;   /* device-level frame reassembly buffer (see goodix.h) */
     int tls = d->tls_inited && d->tls;
     int deadline = tmo_ms > 0 ? tmo_ms : 200;
 
@@ -421,9 +455,9 @@ static int next_payload(struct goodix_dev *d, uint8_t *out, uint16_t *outlen,
                 uint8_t tmp[2048];
                 int n = gx_tls_recv(d, tmp, sizeof(tmp), 0);
                 if (n <= 0)
-                    break;          /* WANT_READ / 暂无更多 */
+                    break;          /* WANT_READ / nothing more for now */
                 if (d->rx_acc_len + (size_t)n > sizeof(d->rx_acc)) {
-                    d->rx_acc_len = 0; /* 溢出：失步重置 */
+                    d->rx_acc_len = 0; /* overflow: out of sync, reset */
                     break;
                 }
                 memcpy(d->rx_acc + d->rx_acc_len, tmp, (size_t)n);
@@ -431,7 +465,7 @@ static int next_payload(struct goodix_dev *d, uint8_t *out, uint16_t *outlen,
             }
             continue;
         }
-        /* 明文帧 */
+        /* plaintext frame */
         if (gx_debug) {
             fprintf(stderr, "[goodix] capture: frame %uB cmd=0x%02x dlen=%u [",
                     flen, frame[4], frame[5] | (frame[6] << 8));
@@ -448,22 +482,23 @@ static int next_payload(struct goodix_dev *d, uint8_t *out, uint16_t *outlen,
     return 0;
 }
 
-/* 分流一条 payload（POV/FDT/TLS-reconnect/图像）。
- * FDT 手指按下事件后，按参考实现行为立即发
- * SetMode Image (0x20 [1,0]) 让 MCU 曝光推图（img_req 保证只发一次）。
- * 返回 1 = 拿到图像。 */
+/* Dispatches one payload (POV/FDT/TLS-reconnect/image).
+ * After an FDT finger-down event, as the reference implementation does, it
+ * immediately sends SetMode Image (0x20 [1,0]) so the MCU exposes and pushes
+ * an image (img_req makes sure it is sent only once).
+ * Returns 1 = got an image. */
 static int dispatch_payload(struct goodix_dev *d, const uint8_t *pl,
                             uint16_t plen, uint8_t *img, uint16_t *size,
                             int *img_req)
 {
     if (is_tls_reconnect_req(pl, plen)) {
-        /* 设备数据 cmd0==13 cmd1==5 -> 触发 TLS 服务端重连 */
+        /* device data cmd0==13 cmd1==5 -> trigger a TLS server reconnection */
         LOG("capture: device requested TLS reconnect (0xDA)");
         if (d->tls) {
-            gx_tls_capture_mode(d, 0);   /* 握手期 bio 要自己读 USB */
+            gx_tls_capture_mode(d, 0);   /* during the handshake the bio has to read USB itself */
             int r = gx_tls_reconnect(d);
             gx_tls_capture_mode(d, 1);
-            d->rx_acc_len = 0;              /* 旧会话聚合数据作废 */
+            d->rx_acc_len = 0;              /* aggregated data of the old session is void */
             if (r < 0)
                 return -1;
         }
@@ -476,15 +511,18 @@ static int dispatch_payload(struct goodix_dev *d, const uint8_t *pl,
     {
         int irq = fdt_irq_status(pl, plen);
         if (irq >= 0) {
-            /* FDT 事件：0x2=手指按下，0x200=抬起；图像帧随后推送 */
+            /* FDT event: 0x2 = finger down, 0x200 = lifted; the image frame is pushed
+             * afterwards */
             handle_fdt_frame(d, pl, plen, irq);
-            /* FDT down 事件 -> 请求取图 ->
-             * SetMode Image (cmd0=2 cmd1=0 = 0x20, data=[1,0])，
-             * MCU 随即曝光并推 cmd0=2 图像帧 */
-            /* irq==2 手指按下；0x80/0x82 "reverse"：基线偏差致真实触碰
-             * 反向极性上报，同样请求取图（坏帧由下游 gx_fdt_check_finger
-             * + 拒绝重布防循环筛除）。修复 enroll 偶发卡死：finger-detect
-             * 上报 0x80 被忽略 -> 不取图 -> "no image frame received"。 */
+            /* FDT down event -> request the image ->
+             * SetMode Image (cmd0=2 cmd1=0 = 0x20, data=[1,0]),
+             * the MCU then exposes and pushes a cmd0=2 image frame */
+            /* irq==2 finger down; 0x80/0x82 "reverse": a baseline offset makes a
+             * real touch report with reversed polarity, so an image is
+             * requested too (bad frames are filtered downstream by
+             * gx_fdt_check_finger + the reject/re-arm loop). Fixes an
+             * occasional enrollment hang: finger detect reported 0x80, it was
+             * ignored -> no image requested -> "no image frame received". */
             if ((irq == 2 || irq == 0x80 || irq == 0x82) &&
                 img_req && !*img_req) {
                 uint8_t im[2] = { 1, 0 };
@@ -498,19 +536,21 @@ static int dispatch_payload(struct goodix_dev *d, const uint8_t *pl,
     }
     if (parse_image_payload(pl, plen, img, GF_IMG_MAX, size) == 0)
         return 1;
-    /* 其它帧（命令/ACK）忽略 */
+    /* other frames (commands/ACKs) ignored */
     return 0;
 }
 
-/* 等设备推送 cmd0=2 图像帧（混合通道）。
- * cancellable=0：已发出 SetMode Image、图像正在路上时用——中途放弃会把
- * 半条 TLS 记录留在通道里，之后所有图像都解不出来（enroll 换阶段时
- * libfprint deactivate 正好落在这个窗口）。此时读完（~150ms，受 timeout
- * 限制）再由调用方检查 capture_stop。 */
+/* Waits for the device to push a cmd0=2 image frame (mixed channel).
+ * cancellable=0: used once SetMode Image has been sent and the image is on
+ * its way - giving up halfway would leave half a TLS record in the channel
+ * and no later image could be decrypted (libfprint's deactivate between
+ * enrollment stages falls exactly in this window). In that case the read is
+ * completed (~150 ms, bounded by the timeout) and the caller checks
+ * capture_stop afterwards. */
 static int wait_image(struct goodix_dev *d, uint8_t *img, uint16_t *size,
                       int timeout_ms, int cancellable)
 {
-    uint8_t *pl = d->rx_scratch;    /* 设备级 payload 工作区 */
+    uint8_t *pl = d->rx_scratch;    /* device-level payload work area */
     int deadline = timeout_ms > 0 ? timeout_ms : 10000;
     int tls = d->tls_inited && d->tls;
     int img_req = 0;
@@ -552,16 +592,17 @@ static int wait_image(struct goodix_dev *d, uint8_t *img, uint16_t *size,
     return -2;
 }
 
-/* 基线采样（FDT-manual）：SetMode(3,3,1) FDT-manual ->
- * cmd0=3 cmd1=3 (0x36)，data=[9, 1, 当前 down 表 12B]（首跑全 0，同
- * 参考实现初值）。MCU 现场采样无手指基线并推 cmd0=3
- * IrqStatus=0x100 帧：data=[irq 2B][touchflag 2B][raw 12B]。
- * 学习为 down 阈值表，成功后 base_valid=true。
- * 参考实现 init 期（基线采样，TLS 握手之后）做这件事；
- * 采不到/校验失败重试 3 次。 */
+/* Baseline sampling (FDT-manual): SetMode(3,3,1) FDT-manual ->
+ * cmd0=3 cmd1=3 (0x36), data=[9, 1, current down table 12B] (all zeros on
+ * the first run, like the reference implementation's initial value). The
+ * MCU samples the no-finger baseline on the spot and pushes a cmd0=3
+ * IrqStatus=0x100 frame: data=[irq 2B][touchflag 2B][raw 12B].
+ * It is learned as the down threshold table; on success base_valid=true.
+ * The reference implementation does this at init (baseline sampling, after
+ * the TLS handshake); 3 retries if nothing arrives or the check fails. */
 int gx_fdt_sample_base(struct goodix_dev *d)
 {
-    uint8_t *pl = d->rx_scratch;    /* 设备级 payload 工作区 */
+    uint8_t *pl = d->rx_scratch;    /* device-level payload work area */
     int tls = d->tls_inited && d->tls;
 
     if (tls)
@@ -570,8 +611,8 @@ int gx_fdt_sample_base(struct goodix_dev *d)
 
     for (int attempt = 0; attempt < 3; attempt++) {
         uint8_t req[14];
-        req[0] = 9;                     /* FDT 手动采样 */
-        req[1] = 1;                     /* a3=1：携带当前 down 表 */
+        req[0] = 9;                     /* FDT manual sample */
+        req[1] = 1;                     /* a3=1: carries the current down table */
         memcpy(&req[2], d->fdt_down_base, 12);
         LOG("FDT manual sample try %d (0x36 [9,1,table12])", attempt + 1);
         if (gx_send_cmd(d, 0x36, req, sizeof(req), 200) < 0) {
@@ -588,7 +629,7 @@ int gx_fdt_sample_base(struct goodix_dev *d)
             }
             int irq = fdt_irq_status(pl, plen);
             if (irq < 0)
-                continue;               /* ACK/其它命令响应帧 */
+                continue;               /* ACK / responses to other commands */
             if (irq == 0x100 && plen >= 3 + 17) {
                 /* [cmd][v19][irq 2B][touchflag 2B][raw 12B][cks] */
                 const uint8_t *raw = &pl[3 + 4];
@@ -603,8 +644,9 @@ int gx_fdt_sample_base(struct goodix_dev *d)
                 LOG("FDT sample invalid, retry");
                 break;
             }
-            /* 采样期间检测到手指（down/up 事件）：本轮作废重采
-             *（参考实现用 delta 比对两次采样判断是否沾手指） */
+            /* a finger was detected during sampling (down/up event): this round is
+             * void, sample again (the reference implementation compares two
+             * samples by delta to tell whether a finger is on it) */
             if (irq == 2 || irq == 0x200) {
                 LOG("FDT sample disturbed by finger (irq 0x%x), retry", irq);
                 break;
@@ -616,19 +658,21 @@ int gx_fdt_sample_base(struct goodix_dev *d)
     return -1;
 }
 
-/* FDT down 布防（采集触发链路 = cmd0=3 cmd1=1 = 0x32）。
- * 参考实现恒 a3=1：data=[8,1,12B down表,ts16] 共 16B
- * （基线采样已在 init 期采好表）。
- * 仅在连采样基线都没有时退回 a3=0 的 4B 形态 [8,0,tbl0,tbl1]
- * （基线存在性检查的兜底分支；
- *  tbl0/tbl1 是当前表的前两字节——无表时即全 0）。 */
+/* FDT down arming (capture trigger chain = cmd0=3 cmd1=1 = 0x32).
+ * The reference implementation always uses a3=1: data=[8,1,12B down table,
+ * ts16], 16B (the baseline sampling at init has already filled the table).
+ * Only when not even a sampled baseline exists does it fall back to the
+ * 4B a3=0 form [8,0,tbl0,tbl1]
+ * (the fallback branch of the baseline presence check;
+ *  tbl0/tbl1 are the first two bytes of the current table - all zeros when
+ *  there is no table). */
 static void arm_fdt_down(struct goodix_dev *d)
 {
     if (d->base_valid) {
         uint8_t fdt[16] = { 0 };
         struct timeval tv;
         fdt[0] = 8;
-        fdt[1] = 1;                 /* a3=1：携带阈值表 */
+        fdt[1] = 1;                 /* a3=1: carries the threshold table */
         memcpy(&fdt[2], d->fdt_down_base, 12);
         gettimeofday(&tv, NULL);
         uint16_t ts = (uint16_t)(tv.tv_sec % 60 * 1000 + tv.tv_usec / 1000);
@@ -645,9 +689,10 @@ static void arm_fdt_down(struct goodix_dev *d)
     }
 }
 
-/* 基线采样的图像基线段：SetMode Image（cmd0=2 cmd1=0 = 0x20,
- * data=[1,0]）直接曝光取一帧无手指图像（init 期 / 温度漂移重建时用，
- * 传感器上必须没有手指）。 */
+/* Image baseline part of baseline sampling: SetMode Image (cmd0=2 cmd1=0 =
+ * 0x20, data=[1,0]) takes one no-finger image by direct exposure (used at
+ * init / when rebuilding after temperature drift; there must be no finger on
+ * the sensor). */
 int gx_capture_base_image(struct goodix_dev *d)
 {
     uint8_t im[2] = { 1, 0 };
@@ -665,8 +710,9 @@ int gx_capture_base_image(struct goodix_dev *d)
     return 0;
 }
 
-/* 是否在每次布防前采新鲜无手指帧：默认开启（GOODIX_IMGPROC_FRESH_BASE=0
- * 关闭；标定 dump 模式下总是采集以便离线对比） */
+/* whether to take a fresh no-finger frame before every arming: on by default
+ * (GOODIX_IMGPROC_FRESH_BASE=0 turns it off; always taken in calibration dump
+ * mode for offline comparison) */
 static int fresh_wanted(const struct goodix_dev *d)
 {
     const char *e = getenv("GOODIX_IMGPROC_FRESH_BASE");
@@ -692,9 +738,10 @@ int gx_capture_fresh_image(struct goodix_dev *d)
     tmp = malloc(GF_IMG_MAX);
     if (!tmp)
         return -1;
-    /* 刚抬起的手指留一点离开时间；期间不向 libfprint 上报手指事件 */
+    /* give a just-lifted finger a moment to leave; no finger events are
+     * reported to libfprint meanwhile */
     usleep(100000);
-    if (d->capture_stop) {          /* 尚未发命令，可直接放弃 */
+    if (d->capture_stop) {          /* no command sent yet, safe to give up */
         free(tmp);
         return -4;
     }
@@ -704,17 +751,20 @@ int gx_capture_fresh_image(struct goodix_dev *d)
     d->event_cb = cb;
     if (r != 0 || sz != d->img_size) {
         free(tmp);
-        /* 超时/失败：图像请求可能仍挂在 MCU 上，再叠一个请求会卡死后续
-         * 取图——本次 open 内停用新鲜帧。 */
+        /* Timeout/failure: the image request may still be pending on the MCU,
+         * and stacking another request would hang the following captures -
+         * fresh frames are disabled for the rest of this open. */
         d->fresh_broken = true;
         LOG("fresh no-finger frame failed (%d, sz=%u) - disabled for this "
             "session, using stored base", r, sz);
         return -1;
     }
     gx_imgproc_dump16(d, "pre16", tmp);
-    /* 合理性检查：与上一可信新鲜帧（跟踪漂移）或存档基线比较整体压低量。
-     * 手指在上时压低 ~1000+ 计数；被拒时保留上一可信新鲜帧不动（按住
-     * 手指连续重试时基线仍是几秒前的）。 */
+    /* Sanity check: compare the overall lowering with the last trusted fresh
+     * frame (tracking drift) or the saved baseline. A finger on the sensor
+     * lowers it by ~1000+ counts; when rejected, the last trusted fresh frame
+     * is kept as is (when retrying repeatedly with the finger held down, the
+     * baseline is still the one from a few seconds earlier). */
     ref = d->img_fresh_valid ? d->img_fresh : d->img_base_valid ? d->img_base : NULL;
     if (ref) {
         uint32_t npix = (uint32_t)d->img_w * d->img_h;
@@ -723,8 +773,9 @@ int gx_capture_fresh_image(struct goodix_dev *d)
         dc /= npix;
     }
     if (ref && (dc > maxdc || dc < -maxdc)) {
-        /* 尚无可信新鲜帧时，存档基线本身可能已严重漂移：没有脊谷结构
-         * （带通对比度低）说明只是漂移而非手指，仍可采用。 */
+        /* With no trusted fresh frame yet, the saved baseline itself may have
+         * drifted a lot: no ridge/valley structure (low band-pass contrast)
+         * means it is just drift and not a finger, so it can still be used. */
         struct gx_imgproc_params p = GX_IMGPROC_SIGFM_PARAMS;
         struct gx_imgproc_signal sig = { 0 };
         p.fresh_base = 0;
@@ -746,12 +797,13 @@ int gx_capture_fresh_image(struct goodix_dev *d)
     return 0;
 }
 
-/* 等设备推送 FDT up（IrqStatus=0x200）帧：gx_capture 收尾的 0x34
- * 布防之后，手指离开传感器时 MCU 会推该事件（设备数据的
- * cmd0=3 分流）。libfprint 驱动用它上报 FP_FINGER_NONE。 */
+/* Waits for the device to push the FDT up frame (IrqStatus=0x200): after the
+ * 0x34 arming at the end of gx_capture, the MCU pushes this event when the
+ * finger leaves the sensor (dispatched as device data cmd0=3). The libfprint
+ * driver uses it to report FP_FINGER_NONE. */
 int gx_wait_finger_up(struct goodix_dev *d, int timeout_ms)
 {
-    uint8_t *pl = d->rx_scratch;    /* 设备级 payload 工作区 */
+    uint8_t *pl = d->rx_scratch;    /* device-level payload work area */
     int deadline = timeout_ms > 0 ? timeout_ms : 10000;
     int tls = d->tls_inited && d->tls;
     int ret = -2;
@@ -776,10 +828,11 @@ int gx_wait_finger_up(struct goodix_dev *d, int timeout_ms)
         }
         int irq = fdt_irq_status(pl, plen);
         if (irq < 0)
-            continue;               /* ACK/其它帧 */
+            continue;               /* ACK / other frames */
         handle_fdt_frame(d, pl, plen, irq);
         if (irq == 0x200 || irq == 2) {
-            /* 0x200=抬起；2=抬起后又按下（边缘抖动）：都视为本轮结束 */
+            /* 0x200 = lifted; 2 = lifted and pressed again (edge bounce): both end this
+             * round */
             LOG("capture: finger up (irq 0x%x)", irq);
             ret = 0;
             break;
@@ -790,33 +843,36 @@ int gx_wait_finger_up(struct goodix_dev *d, int timeout_ms)
     return ret;
 }
 
-/* gx_capture：取图 + POV 唤醒路径的实现。
+/* gx_capture: implementation of image capture + the POV wake-up path.
  *
- * 采集流程（取图/POV/普通路径）：
- *   1. 取图开头：若 TLS 项目标志置位且 (MCU state bit1
- *      isTlsConnected==0 或 host TLS 未就绪) -> 触发 TLS 服务端重连。
- *   2. POV 路径只在 MCU state bit0 (isPOVImageValid)==1 时走：
- *      发 0xD2 {0,0}（POV 唤醒命令），等 POV 帧
- *      (cmd0=13 cmd1=1 data[0]=0xAA)；bit0==0 则不发任何命令。
- *   3. 普通路径：触发采集命令 = FDT down（0x32，16B 形态
- *      [8,1,12B down表,ts16]）。之后设备在手指触碰时先推 cmd0=3 FDT
- *      事件帧（顺带学 up 基线），host 发 SetMode Image 取图。
- *   4. 收到图像后主机侧判别：1=finger 交付；2=void/3=bad 重新布防 FDT DOWN；
- *      0=temperature 则重建基线（重建 FDT/图像基线后再布防）。
- *   5. 调试用 GOODIX_CAPTURE_IMAGE_MODE=1：跳过 FDT，直接
- *      SetMode Image（0x20 [1,0]），首帧即收。
- * 必须用手指触摸传感器才能产生 FDT 驱动的图像帧。
+ * Capture flow (image / POV / normal path):
+ *   1. At the start: if the TLS project flag is set and (MCU state bit1
+ *      isTlsConnected==0 or host TLS not ready) -> trigger a TLS server
+ *      reconnection.
+ *   2. The POV path runs only when MCU state bit0 (isPOVImageValid)==1:
+ *      send 0xD2 {0,0} (POV wake-up command), wait for the POV frame
+ *      (cmd0=13 cmd1=1 data[0]=0xAA); with bit0==0 no command is sent.
+ *   3. Normal path: the capture trigger command = FDT down (0x32, 16B form
+ *      [8,1,12B down table,ts16]). Then, when a finger touches, the device
+ *      first pushes a cmd0=3 FDT event frame (also used to learn the up
+ *      baseline) and the host sends SetMode Image to get the image.
+ *   4. Host-side decision once the image arrives: 1=finger, delivered;
+ *      2=void/3=bad, FDT DOWN re-armed; 0=temperature, baseline rebuilt
+ *      (FDT/image baselines rebuilt, then armed again).
+ *   5. For debugging, GOODIX_CAPTURE_IMAGE_MODE=1 skips FDT and sends
+ *      SetMode Image (0x20 [1,0]) directly; the first frame is taken.
+ * Only a finger touching the sensor produces FDT-driven image frames.
  */
 int gx_capture(struct goodix_dev *d, uint8_t *img, uint16_t *size)
 {
     int r;
     int pov_valid = 0;
 
-    d->capture_stop = 0;            /* 每次采集开始清除取消标志 */
+    d->capture_stop = 0;            /* clear the cancel flag at the start of every capture */
 
-    /* step 1: 获取 MCU 状态（取图前置检查）。
-     * state[1] bit0 = isPOVImageValid（POV 条件）,
-     *          bit1 = isTlsConnected（TLS 连接状态）,
+    /* step 1: get the MCU state (pre-capture check).
+     * state[1] bit0 = isPOVImageValid (POV condition),
+     *          bit1 = isTlsConnected (TLS connection state),
      *          bit3 = isLocked. */
     {
         uint8_t st[16] = { 0 };
@@ -828,8 +884,9 @@ int gx_capture(struct goodix_dev *d, uint8_t *img, uint16_t *size)
                 (st[1] & 1) ? 1 : 0, (st[1] & 2) ? 1 : 0,
                 (st[1] & 8) ? 1 : 0);
             pov_valid = st[1] & 1;
-            /* 取图前置的 TLS 活性检查：host 认为 TLS 已建立但 MCU
-             * 报 isTlsConnected==0 -> 触发 TLS 服务端重连 */
+            /* Pre-capture TLS liveness check: the host thinks TLS is up but the
+             * MCU reports isTlsConnected==0 -> trigger a TLS server
+             * reconnection */
             if (d->tls_inited && !(st[1] & 0x02)) {
                 LOG("MCU reports TLS not connected, reconnecting");
                 gx_tls_reconnect(d);
@@ -839,22 +896,25 @@ int gx_capture(struct goodix_dev *d, uint8_t *img, uint16_t *size)
         }
     }
 
-    /* step 2: POV 唤醒 - 仅当 MCU 报 isPOVImageValid（POV 条件
-     * state[1]&1）；否则走普通路径发 FDT down 布防手指检测。 */
+    /* step 2: POV wake-up - only when the MCU reports isPOVImageValid (POV
+     * condition state[1]&1); otherwise take the normal path and arm FDT down
+     * finger detection. */
     if (pov_valid) {
         LOG("capture: POV image valid, WakeupMCU (0xD2 {0,0})");
         uint8_t wake[2] = { 0, 0 };
-        gx_send_cmd(d, 0xD2, wake, 2, 200);   /* evt=-1, 等 ACK 由读循环跳过 */
-        usleep(300000);                        /* 让 MCU 进入检测状态 */
+        gx_send_cmd(d, 0xD2, wake, 2, 200);   /* evt=-1, the read loop skips the ACK */
+        usleep(300000);                        /* let the MCU enter detection mode */
     } else if (getenv("GOODIX_CAPTURE_IMAGE_MODE")) {
-        /* 调试旁路：直接 SetMode Image（cmd0=2 cmd1=0 = 0x20,
-         * data=[1,0]；设置模式 "setmode: Image"）。
-         * MCU 立即曝光推一帧图像，不需要 FDT 触发。 */
+        /* Debug bypass: SetMode Image directly (cmd0=2 cmd1=0 = 0x20,
+         * data=[1,0]; set mode "setmode: Image").
+         * The MCU exposes and pushes an image right away, no FDT trigger
+         * needed. */
         uint8_t im[2] = { 1, 0 };
         LOG("capture: SetMode Image (0x20 [1,0]) - direct exposure");
         gx_send_cmd(d, 0x20, im, 2, 200);
     } else {
-        /* 新鲜无手指帧：紧邻手指帧的基线（标定 dump / FRESH_BASE 模式） */
+        /* fresh no-finger frame: a baseline right next to the finger frame
+         * (calibration dump / FRESH_BASE mode) */
         if (fresh_wanted(d) &&
             (gx_capture_fresh_image(d) == -4 || d->capture_stop))
             return -4;
@@ -865,11 +925,14 @@ int gx_capture(struct goodix_dev *d, uint8_t *img, uint16_t *size)
         d->tls_inited ? 1 : 0);
     LOG("capture: PLACE YOUR FINGER ON THE SENSOR NOW");
 
-    /* step 3: 等设备推送 cmd0=2 图像帧，拿到后做主机侧手指判别：
-     *  1 finger      -> 接受交付
-     *  2 void/3 bad  -> "not finger nor temp: to FDT DOWN" 重新布防
-     *  0 temperature -> 温度漂移：重建 FDT+图像基线再布防
-     * 直曝调试模式 / 无基线图像：保持旧行为，首帧即收。 */
+    /* step 3: wait for the device to push a cmd0=2 image frame, then make the
+     * host-side finger decision:
+     *  1 finger      -> accepted and delivered
+     *  2 void/3 bad  -> "not finger nor temp: to FDT DOWN", armed again
+     *  0 temperature -> temperature drift: rebuild FDT + image baseline,
+     *                   then arm again
+     * Direct-exposure debug mode / no baseline image: old behaviour, the
+     * first frame is taken. */
     r = -2;
     {
         int direct = getenv("GOODIX_CAPTURE_IMAGE_MODE") != NULL;
@@ -890,18 +953,22 @@ int gx_capture(struct goodix_dev *d, uint8_t *img, uint16_t *size)
                 break;
             }
             if (v == 0) {
-                /* 温度漂移处理：重建基线 -> FDT DOWN */
+                /* temperature drift: rebuild the baseline -> FDT DOWN */
                 LOG("capture: temperature drift, rebuild all base");
                 gx_fdt_sample_base(d);
                 if (gx_capture_base_image(d) == 0)
                     gx_base_save(d);
             } else if (v == 2 && !resampled &&
                        (d->last_fdt_irq == 0x80 || d->last_fdt_irq == 0x82)) {
-                /* reverse 触发却是空帧：down 表已偏离当前无手指状态（快速
-                 * 连按时手指尚未完全离开就在 0x200 上学了 down 表，之后每次
-                 * 布防都立即反向触发，真实手指只在刚接触时被拍到）。图像判空
-                 * = 此刻传感器上没有手指：按 init 的方式（空表）就地重采 down
-                 * 基线；失败则保留原表。每次采集最多一次，避免循环。 */
+                /* A reverse trigger but an empty frame: the down table no longer
+                 * matches the current no-finger state (with fast repeated
+                 * touches the down table was learned on 0x200 before the
+                 * finger had fully left; from then on every arming fires
+                 * immediately in reverse, and a real finger is photographed
+                 * only as it first lands). An empty image = no finger on the
+                 * sensor right now: resample the down baseline on the spot,
+                 * as init does (empty table); keep the old table on failure.
+                 * At most once per capture, to avoid loops. */
                 uint8_t old[sizeof(d->fdt_down_base)];
                 resampled = 1;
                 LOG("capture: void frame on reverse event - finger-detect "
@@ -923,10 +990,10 @@ int gx_capture(struct goodix_dev *d, uint8_t *img, uint16_t *size)
     if (r == 0) {
         d->have_image = true;
         LOG("captured %u bytes", size ? *size : 0);
-        /* 取图收尾："to get upbase and to set FDT UP" ->
-         * SetMode(3,2,1) = cmd (3<<4)|(2<<1) = 0x34，
-         * data=[10, 1, fdt_up_base 12B]，布防手指抬起检测（为下次采集
-         * 循环做准备；下次 capture 会重新布防 down）。 */
+        /* End of capture: "to get upbase and to set FDT UP" ->
+         * SetMode(3,2,1) = cmd (3<<4)|(2<<1) = 0x34,
+         * data=[10, 1, fdt_up_base 12B], arms finger-lift detection (to
+         * prepare the next capture loop; the next capture arms down again). */
         {
             uint8_t fup[14];
             fup[0] = 10;
@@ -934,7 +1001,8 @@ int gx_capture(struct goodix_dev *d, uint8_t *img, uint16_t *size)
             memcpy(&fup[2], d->fdt_up_base, 12);
             gx_send_cmd(d, 0x34, fup, sizeof(fup), 200);
         }
-        /* 基线落盘：采到图且运行中学到了新基线 -> 落盘 */
+        /* save the baseline: an image was captured and a new baseline was learned
+         * meanwhile -> save it */
         if (d->base_dirty)
             gx_base_save(d);
     } else {

@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Ottimizzazione di un pose-graph 2D (SE(2)) — per togliere la deriva dell'odometria.
+"""Optimization of a 2D pose graph (SE(2)) — to remove odometry drift.
 
-I keyframe sono nodi con posa (x, y, theta). Ogni registrazione tra due keyframe e' un arco con una
-misura di posa relativa. Quando la traccia chiude un anello (si ripassa su una zona gia' mappata)
-gli archi diventano sovra-vincolanti: l'ottimizzazione (Gauss-Newton) ridistribuisce l'errore e la
-mappa si raddrizza. Nodo 0 fissato (gauge). Solver denso: ok fino a qualche centinaio di nodi.
+Keyframes are nodes with a pose (x, y, theta). Every registration between two keyframes is an
+edge with a relative pose measurement. When the track closes a loop (passing again over an area
+already mapped) the edges become over-constraining: the optimization (Gauss-Newton) spreads the
+error and the map straightens out. Node 0 is fixed (gauge). Dense solver: fine up to a few
+hundred nodes.
 
-Convenzione arco (i, j, (dx, dy, dth), w): posa di j nel sistema di i (dalla registrazione j->i).
+Edge convention (i, j, (dx, dy, dth), w): pose of j in the frame of i (from registration j->i).
 """
 
 import numpy as np
@@ -27,7 +28,7 @@ def xyt_to_pose(x, y, t):
 
 
 def optimize(poses, edges, iters=12, fix=0):
-    """poses: (N,3) [x,y,theta]; edges: lista (i, j, (dx,dy,dth), w). -> poses ottimizzate."""
+    """poses: (N,3) [x,y,theta]; edges: list of (i, j, (dx,dy,dth), w). -> optimized poses."""
     P = np.asarray(poses, np.float64).copy()
     N = len(P)
     if N < 3 or not edges:
@@ -40,7 +41,7 @@ def optimize(poses, edges, iters=12, fix=0):
             xj, yj, tj = P[j]
             c, s = np.cos(ti), np.sin(ti)
             dxw, dyw = xj - xi, yj - yi
-            # posa relativa predetta (j nel frame di i)
+            # predicted relative pose (j in the frame of i)
             pdx = c * dxw + s * dyw
             pdy = -s * dxw + c * dyw
             pdt = _wrap(tj - ti)
@@ -55,7 +56,7 @@ def optimize(poses, edges, iters=12, fix=0):
                 b[3 * a:3 * a + 3] += w * (A.T @ e)
                 for (B, bb) in ((Ji, i), (Jj, j)):
                     H[3 * a:3 * a + 3, 3 * bb:3 * bb + 3] += w * (A.T @ B)
-        # fissa il nodo gauge
+        # fix the gauge node
         H[3 * fix:3 * fix + 3, :] = 0
         H[:, 3 * fix:3 * fix + 3] = 0
         H[3 * fix:3 * fix + 3, 3 * fix:3 * fix + 3] = np.eye(3)

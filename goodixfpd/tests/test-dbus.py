@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-# test-dbus.py - goodixfpd contro i client veri dell'API fprintd.
+# test-dbus.py - goodixfpd against the real clients of the fprintd API.
 #
-# Avvia un bus di sistema privato, un polkit finto e goodixfpd-test (il
-# servizio con il sensore simulato), poi lo usa come fanno pam_fprintd, i
-# comandi fprintd-* e la GUI: chiamate D-Bus dirette, fprintd-list/-verify,
-# pam_fprintd.so vero tramite pam-harness. Le "dita" sono immagini sintetiche
-# a creste generate qui (nessun dato biometrico nel repository).
+# Starts a private system bus, a fake polkit and goodixfpd-test (the service
+# with the simulated sensor), then uses it the way pam_fprintd, the fprintd-*
+# commands and the GUI do: direct D-Bus calls, fprintd-list/-verify, the real
+# pam_fprintd.so through pam-harness. The "fingers" are synthetic ridge images
+# generated here (no biometric data in the repository).
 #
 #   test-dbus.py <goodixfpd-test> <pam-harness> <system-bus.conf> <mock-polkit.py>
 #
@@ -34,7 +34,7 @@ DEV = "/net/reactivated/Fprint/Device/0"
 DEV_IFACE = "net.reactivated.Fprint.Device"
 TIMEOUT = 15
 
-# ---------------------------------------------------------------- immagini
+# ---------------------------------------------------------------- images
 
 
 def smooth(a, k):
@@ -45,7 +45,7 @@ def smooth(a, k):
 
 
 def finger(seed, h=160, w=300):
-    """Campo di creste con orientamento e fase che variano piano."""
+    """Ridge field whose orientation and phase vary slowly."""
     r = np.random.default_rng(seed)
     th = smooth(r.standard_normal((h, w)), 4000)
     th = th / th.std() * 1.2
@@ -73,7 +73,7 @@ class Images:
 
 ENROLL_AT = [(ox, oy) for oy in (10, 40, 70) for ox in (10, 30, 50, 70, 90)]
 
-# ---------------------------------------------------------------- ambiente
+# ---------------------------------------------------------------- environment
 
 
 class Env:
@@ -138,7 +138,7 @@ class Env:
             time.sleep(0.01)
 
     def touch(self, *cmd):
-        """Un comando al sensore simulato; torna quando il servizio lo ha letto."""
+        """A command to the simulated sensor; returns once the service has read it."""
         line = " ".join(str(c) for c in cmd) + "\n"
         self.sensor.sendall(line.encode())
         buf = b""
@@ -171,7 +171,7 @@ CLIENTS = []
 
 
 class Client:
-    """Un processo client sul bus: chiamate e segnali del dispositivo."""
+    """A client process on the bus: device calls and signals."""
 
     def __init__(self, env):
         self.env = env
@@ -203,7 +203,7 @@ class Client:
         return r.unpack()[0]
 
     def next_status(self, kind):
-        """Il prossimo VerifyStatus/EnrollStatus: (risultato, done)."""
+        """The next VerifyStatus/EnrollStatus: (result, done)."""
         def has():
             return any(n == kind for n, _ in self.signals)
         Env.wait_for(has)
@@ -236,7 +236,7 @@ def test(fn):
 
 
 def enroll(env, c, finger_name, f, dup_check=None):
-    """Registrazione completa: tocco di controllo, 15 posizioni, 4 ripetuti."""
+    """Full enrollment: check touch, 15 positions, 4 repeated."""
     c.drain()
     c.call("EnrollStart", "s", finger_name)
     env.image(*(dup_check or (f, 10, 10)))
@@ -324,7 +324,7 @@ def enroll_and_list(env):
 
     enroll(env, c, "right-index-finger", "A")
     stages = c.prop("num-enroll-stages")
-    assert stages == 17, stages          # 15 posizioni + chiusura + controllo
+    assert stages == 17, stages          # 15 positions + closing + check
     assert c.call("ListEnrolledFingers", "s", "") == (["right-index-finger"],)
     c.call("Release")
     c.close()
@@ -345,7 +345,7 @@ def verify_match_nomatch_retry(env):
     assert c.next_status("VerifyStatus") == ("verify-retry-scan", False)
     env.image("A", 47, 37)
     assert c.next_status("VerifyStatus") == ("verify-match", True)
-    c.fails("AlreadyInUse", "VerifyStart", "s", "any")   # prima serve VerifyStop
+    c.fails("AlreadyInUse", "VerifyStart", "s", "any")   # VerifyStop is needed first
     c.call("VerifyStop")
     c.fails("NoEnrolledPrints", "VerifyStart", "s", "left-thumb")
     c.call("Release")
@@ -384,7 +384,7 @@ def duplicates_and_identify(env):
     c.call("Claim", "s", "")
     c.drain()
     c.call("EnrollStart", "s", "left-thumb")
-    env.image("A", 53, 43)                       # dito gia' registrato
+    env.image("A", 53, 43)                       # finger already enrolled
     assert c.next_status("EnrollStatus") == ("enroll-duplicate", True)
     c.call("EnrollStop")
     assert c.call("ListEnrolledFingers", "s", "") == (["right-index-finger"],)
@@ -401,7 +401,7 @@ def client_vanishes(env):
     a = Client(env)
     a.call("Claim", "s", "")
     a.call("VerifyStart", "s", "any")
-    a.close()                                    # come pam_fprintd dopo un successo
+    a.close()                                    # like pam_fprintd after a success
     b = Client(env)
     env.wait_for(lambda: try_claim(b))
     b.call("Release")
@@ -450,7 +450,7 @@ def polkit(env):
     c.fails("PermissionDenied", "Claim", "s", "someone-else")
     c.fails("PermissionDenied", "ListEnrolledFingers", "s", "someone-else")
     env.set_denied("net.reactivated.fprint.device.enroll")
-    c.call("Claim", "s", "")                     # basta verify
+    c.call("Claim", "s", "")                     # verify is enough
     c.fails("PermissionDenied", "EnrollStart", "s", "left-index-finger")
     c.fails("PermissionDenied", "DeleteEnrolledFinger", "s", "left-thumb")
     c.call("Release")
@@ -480,7 +480,7 @@ def pam(env, images, max_tries=2):
                          stderr=subprocess.STDOUT, text=True)
     lines = []
     for img in images:
-        # aspetta "Place your ... finger on ..." prima di toccare
+        # wait for "Place your ... finger on ..." before touching
         while True:
             line = p.stdout.readline()
             assert line, "".join(lines)
@@ -496,13 +496,13 @@ def pam(env, images, max_tries=2):
 @test
 def pam_fprintd(env):
     if not os.path.exists("/usr/lib/security/pam_fprintd.so"):
-        print("  (pam_fprintd.so assente, salto)")
+        print("  (pam_fprintd.so missing, skipping)")
         return
     rc, out = pam(env, [("A", 53, 43)])
     assert rc == 0 and "result: PAM_SUCCESS" in out, out
     rc, out = pam(env, [("C", 50, 40), ("C", 60, 40)])
     assert "Failed to match fingerprint" in out and "result: PAM_MAXTRIES" in out, out
-    rc, out = pam(env, [("C", 50, 40), ("A", 47, 37)])   # secondo tentativo buono
+    rc, out = pam(env, [("C", 50, 40), ("A", 47, 37)])   # second attempt is good
     assert rc == 0, out
 
 
@@ -556,10 +556,10 @@ def main():
                 failed += 1
                 print(f"FAIL - {t.__name__}: {type(e).__name__}: {e}", flush=True)
                 if env.daemon.poll() is not None:
-                    print("  servizio terminato!", flush=True)
+                    print("  service terminated!", flush=True)
                     break
-            # client rimasti aperti (test fallito): chiusi, il servizio deve
-            # liberare il dispositivo come per un client sparito
+            # clients left open (failed test): closed, the service must
+            # free the device as for a vanished client
             for c in CLIENTS:
                 c.close()
             CLIENTS.clear()
@@ -571,7 +571,7 @@ def main():
     finally:
         rc = env.close()
         if failed or rc != 0:
-            print(f"--- log del servizio (exit {rc}) ---")
+            print(f"--- service log (exit {rc}) ---")
             print(open(os.path.join(env.tmp, "daemon.log")).read()[-6000:])
             print("--- polkit ---")
             if os.path.exists(env.polkit_log):

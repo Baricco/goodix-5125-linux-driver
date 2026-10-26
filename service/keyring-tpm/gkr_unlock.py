@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Sblocca il keyring 'login' di gnome-keyring via D-Bus Secret Service,
-usando la master password letta da stdin (byte esatti, nessuno strip).
-Metodo: org.gnome.keyring.InternalUnsupportedGuiltRiddenInterface.UnlockWithMasterPassword
-con una sessione 'plain' (password in chiaro sul bus di sessione locale).
+"""Unlocks gnome-keyring's 'login' keyring through the D-Bus Secret Service,
+using the master password read from stdin (exact bytes, no stripping).
+Method: org.gnome.keyring.InternalUnsupportedGuiltRiddenInterface.UnlockWithMasterPassword
+with a 'plain' session (password in clear text on the local session bus).
 
-Al login il daemon puo' non essere ancora sul bus: si riprova finche' risponde
-(max WAIT_S). Solo chiamate di metodo: una lettura di proprieta' troppo precoce
-fa abortire gnome-keyring (vedi keyring-unlock.sh).
+At login the daemon may not be on the bus yet: it retries until it answers
+(at most WAIT_S). Method calls only: a property read that comes too early
+makes gnome-keyring abort (see keyring-unlock.sh).
 """
 import sys
 import time
@@ -16,9 +16,9 @@ import dbus
 COLLECTION = "/org/freedesktop/secrets/collection/login"
 WAIT_S = 5.0
 
-# Errori da "daemon non ancora pronto": nome non posseduto, oggetti non ancora
-# esportati, collezione non ancora caricata. Gli altri (es. password errata)
-# falliscono subito, senza allungare il login.
+# "Daemon not ready yet" errors: name not owned, objects not exported yet,
+# collection not loaded yet. Any other error (e.g. a wrong password) fails
+# right away, without making the login longer.
 RETRY = {
     "org.freedesktop.DBus.Error.NoServer",
     "org.freedesktop.DBus.Error.FileNotFound",
@@ -38,7 +38,7 @@ def unlock(pw: bytes) -> None:
     svc = bus.get_object("org.freedesktop.secrets", "/org/freedesktop/secrets",
                          introspect=False)
     service = dbus.Interface(svc, "org.freedesktop.Secret.Service")
-    # Sessione 'plain': la master password viaggia in chiaro (solo bus locale).
+    # 'plain' session: the master password travels in clear text (local bus only).
     _output, session = service.OpenSession("plain", dbus.String("", variant_level=1))
     secret = dbus.Struct(
         (
@@ -57,7 +57,7 @@ def unlock(pw: bytes) -> None:
 def main() -> int:
     pw = sys.stdin.buffer.read()
     if not pw:
-        print("gkr_unlock: password vuota su stdin", file=sys.stderr)
+        print("gkr_unlock: empty password on stdin", file=sys.stderr)
         return 1
     deadline = time.monotonic() + WAIT_S
     while True:
@@ -75,6 +75,6 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except Exception as exc:  # noqa: BLE001 - fallback silenzioso lato chiamante
+    except Exception as exc:  # noqa: BLE001 - the caller falls back silently
         print(f"gkr_unlock: {exc}", file=sys.stderr)
         sys.exit(1)

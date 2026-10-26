@@ -1,4 +1,4 @@
-# Segreti e materiale proprietario: mai nel repo
+# Secrets and proprietary material: never in the repo
 captures/
 state/
 re/
@@ -17,15 +17,15 @@ goodix-fp-dump/
 tools/.venv/
 __pycache__/
 *.pyc
-# banco di tuning: binari compilati da build.sh
+# tuning bench: binaries built by build.sh
 tools/fp_tune/sigfm_test
 tools/fp_tune/imgproc_run
 tools/fp_tune/libsigfm_prod.so
 
-# istruzioni personali per l agente, non pubblicare
+# personal instructions for the agent, not to be published
 prompt_goodix_5125.md
-# build del pacchetto (makepkg)
-# build di goodixfpd (meson)
+# package build (makepkg)
+# goodixfpd build (meson)
 goodixfpd/build*/
 goodixfpd/compile_commands.json
 packaging/goodixfpd/src/

@@ -1,22 +1,22 @@
-/* goodix_cmd.c - 命令层（命令字节与功能对应）
+/* goodix_cmd.c - command layer (command bytes and their functions)
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
- * 命令字节 = (cmd0<<4)|(cmd1<<1)：
- *   ResetSensor    0xA2  cmd0=10 cmd1=1  data={1,20}   [复位 MCU 与指纹模块]
- *   GetEvkVersion  0xA8  cmd0=10 cmd1=4  data={0,0}    [读取 EVK 版本]
- *   GetMcuState    0xAF  cmd0=10 cmd1=7  data={0x55,ts16,0,0} [读取 MCU 状态, more=1]
- *   ChipRegRead    0x82  cmd0=8  cmd1=1  data={0,reg16,len16} [读芯片寄存器]
- *   SetMode idle   0x20  cmd0=2  cmd1=0                 [设置空闲模式]
- *   SetMode capture 0x36 cmd0=3  cmd1=3                 [设置采集模式]
- *   TLS init       0xD1  cmd0=13 cmd1=0  data={0,0}    [TLS server 初始化, more=1]
- *   TLS handshake  0xD4  cmd0=13 cmd1=2  data={0,0}    [TLS 握手]
- *   MCU read       0xE4  cmd0=14 cmd1=2  data={type32,0}[MCU 生产读]
- *   MCU write      0xE0  cmd0=14 cmd1=0                 [MCU 生产写]
- *   ClearApp       0xA4  cmd0=10 cmd1=2  data={0,0}    [清除 APP 区域]
- *   ReadOtpData    0xA6  cmd0=10 cmd1=3  data={0,0}    [读 OTP 数据]
- *   DownloadConfig 0x90  cmd0=9  cmd1=0  data=cfg(224B)[下载配置]
- *   FW slice       0xF0  cmd0=15 cmd1=0  {off32,len32,data} [固件分片传输]
- *   FW finish      0xF4  cmd0=15 cmd1=2  {0,0,len32,crc32} [固件传输结束]
+ * Command byte = (cmd0<<4)|(cmd1<<1):
+ *   ResetSensor    0xA2  cmd0=10 cmd1=1  data={1,20}   [reset MCU and fingerprint module]
+ *   GetEvkVersion  0xA8  cmd0=10 cmd1=4  data={0,0}    [read the EVK version]
+ *   GetMcuState    0xAF  cmd0=10 cmd1=7  data={0x55,ts16,0,0} [read the MCU state, more=1]
+ *   ChipRegRead    0x82  cmd0=8  cmd1=1  data={0,reg16,len16} [read chip registers]
+ *   SetMode idle   0x20  cmd0=2  cmd1=0                 [set idle mode]
+ *   SetMode capture 0x36 cmd0=3  cmd1=3                 [set capture mode]
+ *   TLS init       0xD1  cmd0=13 cmd1=0  data={0,0}    [TLS server init, more=1]
+ *   TLS handshake  0xD4  cmd0=13 cmd1=2  data={0,0}    [TLS handshake]
+ *   MCU read       0xE4  cmd0=14 cmd1=2  data={type32,0}[MCU production read]
+ *   MCU write      0xE0  cmd0=14 cmd1=0                 [MCU production write]
+ *   ClearApp       0xA4  cmd0=10 cmd1=2  data={0,0}    [erase the APP area]
+ *   ReadOtpData    0xA6  cmd0=10 cmd1=3  data={0,0}    [read OTP data]
+ *   DownloadConfig 0x90  cmd0=9  cmd1=0  data=cfg(224B)[download configuration]
+ *   FW slice       0xF0  cmd0=15 cmd1=0  {off32,len32,data} [firmware chunk transfer]
+ *   FW finish      0xF4  cmd0=15 cmd1=2  {0,0,len32,crc32} [end of firmware transfer]
  */
 #include <string.h>
 #include <unistd.h>
@@ -24,7 +24,7 @@
 #include <sys/time.h>
 #include "goodix.h"
 
-/* 发送明文命令 */
+/* sends a plaintext command */
 int gx_send_cmd(struct goodix_dev *d, uint8_t cmd,
                 const uint8_t *data, uint16_t len, int tmo)
 {
@@ -32,23 +32,25 @@ int gx_send_cmd(struct goodix_dev *d, uint8_t cmd,
     return gx_send_cmd_frame(d, cmd, data, len);
 }
 
-/* 发送命令并等待匹配的数据响应帧。
+/* Sends a command and waits for the matching data response frame.
  *
- * 协议交互过程：
+ * Protocol exchange:
  *
- *   1. 发送明文帧（命令字节，可能携带 more 位）。
- *   2. 设备回复 ACK 帧（命令字节 0xB0，data[0] = 原命令，
- *      data[1] = 状态位：0x02 配置丢失，0x04 TLS 丢失），
- *      此帧在此处消费并跳过。
- *   3. 设备随后回复 DATA 响应帧，其命令字节必须等于请求命令
- *      （more 位已清零）。该帧触发各命令对应的事件
- *      （读取 EVK 版本：cmd0=10 cmd1=4 -> event 9；
- *       读取 MCU 状态/复位传感器：cmd0=10 cmd1=1/7 -> event 6；
- *       寄存器读写：cmd0=8 -> event 2）。
- *   4. 响应 payload[1:2] 是数据长度，含末尾校验和字节。
+ *   1. Send the plaintext frame (command byte, possibly with the more bit).
+ *   2. The device replies with an ACK frame (command byte 0xB0, data[0] =
+ *      original command, data[1] = status bits: 0x02 config lost, 0x04 TLS
+ *      lost), consumed and skipped here.
+ *   3. The device then replies with the DATA response frame, whose command
+ *      byte must equal the requested command (more bit cleared). The frame
+ *      triggers each command's event
+ *      (read EVK version: cmd0=10 cmd1=4 -> event 9;
+ *       read MCU state/reset sensor: cmd0=10 cmd1=1/7 -> event 6;
+ *       register read/write: cmd0=8 -> event 2).
+ *   4. Response payload[1:2] is the data length, including the trailing
+ *      checksum byte.
  *
- * 返回 0 表示成功，数据复制到 rsp（长度在 *rsp_len，校验和字节已去除），
- * 超时返回 -3。
+ * Returns 0 on success with the data copied to rsp (length in *rsp_len,
+ * checksum byte removed), -3 on timeout.
  */
 int gx_send_cmd_wait(struct goodix_dev *d, uint8_t cmd,
                      const uint8_t *data, uint16_t len,
@@ -58,7 +60,7 @@ int gx_send_cmd_wait(struct goodix_dev *d, uint8_t cmd,
     uint16_t flen = 0;
     int r;
     int deadline = tmo > 0 ? tmo : 1500;
-    uint8_t want = (uint8_t)(cmd & 0xFE);   /* 期望响应命令，more 位清零 */
+    uint8_t want = (uint8_t)(cmd & 0xFE);   /* expected response command, more bit cleared */
 
     r = gx_send_cmd(d, cmd, data, len, tmo);
     if (r < 0)
@@ -74,23 +76,24 @@ int gx_send_cmd_wait(struct goodix_dev *d, uint8_t cmd,
             continue;
         uint8_t cb = frame[GF_CMD_BYTE];
         uint8_t c0 = cb >> 4;
-        if ((cb & 1) != 0)       /* more 位：非最终帧 */
+        if ((cb & 1) != 0)       /* more bit: not the final frame */
             continue;
         if (c0 == 0xB || c0 == 0xC)
-            continue;            /* ACK (0xB0) / 通知 (0xC0)：跳过，继续等待 */
-        /* 生产命令（cmd0=0xE）：响应携带相同 cmd0 但 cmd1 不同
-         * （读 0xE4 -> 0xE4/0xE6，写 0xE0 -> 0xE2）。仅按 cmd0 匹配。 */
+            continue;            /* ACK (0xB0) / notification (0xC0): skip and keep waiting */
+        /* Production commands (cmd0=0xE): the response carries the same cmd0 but
+         * a different cmd1 (read 0xE4 -> 0xE4/0xE6, write 0xE0 -> 0xE2). Match
+         * on cmd0 only. */
         if ((want >> 4) == 0xE) {
             if (c0 != 0xE)
                 continue;
         } else if (cb != want) {
-            continue;            /* 其他命令的响应 */
+            continue;            /* responses of the other commands */
         }
 
         uint16_t dlen = (uint16_t)(frame[GF_DATA_LEN] | (frame[GF_DATA_LEN + 1] << 8));
         if (dlen < 1)
             continue;
-        if (dlen > 1)            /* 去掉末尾校验和字节 */
+        if (dlen > 1)            /* drop the trailing checksum byte */
             dlen--;
         if (dlen > flen - GF_DATA)
             dlen = (uint16_t)(flen - GF_DATA);
@@ -103,17 +106,17 @@ int gx_send_cmd_wait(struct goodix_dev *d, uint8_t cmd,
     return -3;
 }
 
-/* MCU 生产读：0xE4, data={data_type(4B),0}
- * 响应：rsp[0]=状态(0=ok)，数据从 rsp[1] 起。 */
+/* MCU production read: 0xE4, data={data_type(4B),0}
+ * Response: rsp[0]=status (0=ok), data from rsp[1] on. */
 int gx_mcu_read(struct goodix_dev *d, uint32_t data_type, uint8_t *out, uint16_t *len)
 {
     uint8_t data[8] = { 0 };
     uint8_t rsp[1024];
     uint16_t rl = sizeof(rsp);
     int r;
-    /* 生产读：发送 (dev, 14, 2, data, 8, 1, 500, 1000, 7)，
-     * 失败时重试一次。回复 data[0] 是 MCU 执行码：
-     * 0 = ok，1 = 无密钥，其他 = 错误。 */
+    /* Production read: send (dev, 14, 2, data, 8, 1, 500, 1000, 7), retried
+     * once on failure. Reply data[0] is the MCU execution code:
+     * 0 = ok, 1 = no key, anything else = error. */
     memcpy(data, &data_type, 4);
     for (int try_i = 0; try_i < 2; try_i++) {
         rl = sizeof(rsp);
@@ -147,16 +150,17 @@ int gx_mcu_read(struct goodix_dev *d, uint32_t data_type, uint8_t *out, uint16_t
     return r;
 }
 
-/* MCU 生产写：0xE0，响应状态必须为 0 */
+/* MCU production write: 0xE0, the response status must be 0 */
 int gx_mcu_write(struct goodix_dev *d, const uint8_t *data, uint16_t len)
 {
     uint8_t rsp[8];
     uint16_t rl = sizeof(rsp);
     int r;
-    /* 生产写：发送 (dev, 14, 0, data, len, 1, 500, 1000, 7)：
-     *   cmd0=14 cmd1=0 (0xE0)，ack_tmo=500，data_tmo=1000，evt=7，
-     * 首次写失败时重试一次。192 字节的 blob 可能让 MCU 消化超过 1 秒，
-     * 因此使用较长的超时并保留一次重试。 */
+    /* Production write: send (dev, 14, 0, data, len, 1, 500, 1000, 7):
+     *   cmd0=14 cmd1=0 (0xE0), ack_tmo=500, data_tmo=1000, evt=7,
+     * retried once if the first write fails. A 192-byte blob can take the
+     * MCU more than 1 second to digest, hence the longer timeout and the
+     * retry. */
     for (int try_i = 0; try_i < 2; try_i++) {
         r = gx_send_cmd_wait(d, GF_CMD_MCU_WRITE, data, len, rsp, &rl, 3000);
         if (r == 0) {
@@ -172,10 +176,10 @@ int gx_mcu_write(struct goodix_dev *d, const uint8_t *data, uint16_t len)
     return r;
 }
 
-/* 设置驱动状态：NOP + 0x97 {state, 2}
- * cmd0=9 cmd1=3, more=1，type 2 = USB。校验和用 0x96。
- * 在读取 EVK 版本之后发送。
- * 帧：A0 06 00 A6 97 03 00 01 02 0E */
+/* Set driver state: NOP + 0x97 {state, 2}
+ * cmd0=9 cmd1=3, more=1, type 2 = USB. The checksum uses 0x96.
+ * Sent after reading the EVK version.
+ * Frame: A0 06 00 A6 97 03 00 01 02 0E */
 int gx_set_driver_state(struct goodix_dev *d, uint8_t state)
 {
     uint8_t data[2] = { state, 2 };
@@ -184,7 +188,7 @@ int gx_set_driver_state(struct goodix_dev *d, uint8_t state)
     return gx_send_cmd_wait(d, GF_CMD_SET_DRIVER_STATE, data, 2, NULL, NULL, 200);
 }
 
-/* 复位传感器：0xA2, data={1,20}（复位 MCU 与指纹模块） */
+/* Reset sensor: 0xA2, data={1,20} (resets the MCU and the fingerprint module) */
 int gx_dev_reset(struct goodix_dev *d)
 {
     uint8_t data[2] = { 1, 20 };
@@ -193,23 +197,24 @@ int gx_dev_reset(struct goodix_dev *d)
     return gx_send_cmd_wait(d, GF_CMD_RESET_SENSOR, data, 2, rsp, &rl, 1000);
 }
 
-/* 读取 EVK 版本：先发送 NOP，再 0xA8 {0,0} -> 64B */
+/* Read EVK version: first a NOP, then 0xA8 {0,0} -> 64 B */
 int gx_dev_evk(struct goodix_dev *d, uint8_t out[64])
 {
     uint8_t data[2] = { 0, 0 };
     uint16_t rl = 64;
-    int r = gx_send_nop(d);          /* NOP 前置同步（pcap 报文 17） */
+    int r = gx_send_nop(d);          /* NOP for synchronization first (pcap packet 17) */
     if (r < 0)
         return r;
-    usleep(10000);                    /* 延时 10ms */
+    usleep(10000);                    /* 10 ms delay */
     return gx_send_cmd_wait(d, GF_CMD_EVK_VERSION, data, 2, out, &rl, 500);
 }
 
-/* 读取 MCU 状态：0xAF (more=1，无 ACK) {0x55, ts16le, 0, 0} -> 16B
- * 抓包报文 23：A0 09 00 A9 AF 06 00 55 [ts16] 00 00 [cks]
- * 校验和用 0xAE。
- * ts16 = 本地时间：毫秒 + 1000*秒（低 16 位），每次调用都填充。
- * MCU 用它做 POV 计时，必须是真实本地时间，不能填零。 */
+/* Read MCU state: 0xAF (more=1, no ACK) {0x55, ts16le, 0, 0} -> 16 B
+ * Capture packet 23: A0 09 00 A9 AF 06 00 55 [ts16] 00 00 [cks]
+ * The checksum uses 0xAE.
+ * ts16 = local time: milliseconds + 1000*seconds (low 16 bits), filled in on
+ * every call. The MCU uses it for POV timing: it must be the real local time,
+ * not zero. */
 int gx_get_mcu_state(struct goodix_dev *d, uint8_t out[16])
 {
     uint8_t data[5] = { 0x55, 0, 0, 0, 0 };
@@ -224,16 +229,17 @@ int gx_get_mcu_state(struct goodix_dev *d, uint8_t out[16])
     return gx_send_cmd_wait(d, GF_CMD_MCU_STATE, data, 5, out, &rl, 500);
 }
 
-/* TLS server 初始化：0xD1 {0,0} - 只发送不等待 (event=-1, ack_tmo=0)。
- * 帧被接受即返回；实际 TLS 握手状态由 OpenSSL + 读取 MCU 状态跟踪。 */
+/* TLS server init: 0xD1 {0,0} - send only, no wait (event=-1, ack_tmo=0).
+ * Returns as soon as the frame is accepted; the actual TLS handshake state is
+ * tracked by OpenSSL + reading the MCU state. */
 int gx_tls_server_cmd(struct goodix_dev *d)
 {
     uint8_t z[2] = { 0, 0 };
     return gx_send_cmd(d, GF_CMD_TLS_SERVER_INIT, z, 2, 200);
 }
 
-/* TLS 握手命令：0xD4 {0,0} (event=-1)。发送后立即返回；
- * 握手完成通过 MCU 状态 bit1 确认。 */
+/* TLS handshake command: 0xD4 {0,0} (event=-1). Returns right after sending;
+ * completion of the handshake is confirmed by bit1 of the MCU state. */
 int gx_tls_handshake_cmd(struct goodix_dev *d)
 {
     uint8_t z[2] = { 0, 0 };
