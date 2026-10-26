@@ -165,6 +165,7 @@ struct goodix_dev {
     uint8_t fdt_up_base[12];   /* FDT-up 阈值表 */
     bool base_valid;        /* base 文件加载成功且 OTP 匹配 / 采样成功 */
     bool base_dirty;        /* 运行时从 FDT IRQ 学到了新基线，待落盘 */
+    int last_fdt_irq;       /* 最近一次 FDT 事件的 IrqStatus（区分 reverse 触发） */
 
     /* 无手指基线图像（对应 goodix.dat 的 imagebase 段），
      * 主机侧手指判别的比较基准。

@@ -322,6 +322,7 @@ static void handle_fdt_frame(struct goodix_dev *d, const uint8_t *p,
 {
     const uint8_t *data = &p[3];
     uint16_t touchflag;
+    d->last_fdt_irq = irq;
     LOG("capture: FDT event IrqStatus=0x%x%s", irq,
         irq == 2 ? " (finger down)" :
         irq == 0x200 ? " (finger up)" :
@@ -873,6 +874,7 @@ int gx_capture(struct goodix_dev *d, uint8_t *img, uint16_t *size)
     {
         int direct = getenv("GOODIX_CAPTURE_IMAGE_MODE") != NULL;
         int rejects = 0;
+        int resampled = 0;
         for (;;) {
             r = wait_image(d, img, size, 10000, 1);
             if (r != 0)
@@ -893,6 +895,23 @@ int gx_capture(struct goodix_dev *d, uint8_t *img, uint16_t *size)
                 gx_fdt_sample_base(d);
                 if (gx_capture_base_image(d) == 0)
                     gx_base_save(d);
+            } else if (v == 2 && !resampled &&
+                       (d->last_fdt_irq == 0x80 || d->last_fdt_irq == 0x82)) {
+                /* reverse 触发却是空帧：down 表已偏离当前无手指状态（快速
+                 * 连按时手指尚未完全离开就在 0x200 上学了 down 表，之后每次
+                 * 布防都立即反向触发，真实手指只在刚接触时被拍到）。图像判空
+                 * = 此刻传感器上没有手指：按 init 的方式（空表）就地重采 down
+                 * 基线；失败则保留原表。每次采集最多一次，避免循环。 */
+                uint8_t old[sizeof(d->fdt_down_base)];
+                resampled = 1;
+                LOG("capture: void frame on reverse event - finger-detect "
+                    "base out of date, resampling");
+                memcpy(old, d->fdt_down_base, sizeof(old));
+                memset(d->fdt_down_base, 0, sizeof(d->fdt_down_base));
+                if (gx_fdt_sample_base(d) == 0)
+                    gx_base_save(d);
+                else
+                    memcpy(d->fdt_down_base, old, sizeof(old));
             } else {
                 LOG("capture: %s frame rejected, re-arm FDT down",
                     v == 2 ? "void" : "bad");
